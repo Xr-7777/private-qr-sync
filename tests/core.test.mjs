@@ -61,3 +61,16 @@ test("sync plan transfers missing files and preserves both sides on differences"
   ]);
 });
 
+test("sync plan sends the newer copy in either direction", () => {
+  const phoneNewer = planSync(
+    [{ path: "note.md", size: 2, mtime: 20, hash: "phone" }],
+    [{ path: "note.md", size: 1, mtime: 10, hash: "computer" }],
+  );
+  const computerNewer = planSync(
+    [{ path: "note.md", size: 1, mtime: 10, hash: "phone" }],
+    [{ path: "note.md", size: 2, mtime: 20, hash: "computer" }],
+  );
+  assert.deepEqual(phoneNewer, [{ kind: "upload", path: "note.md", preserveExisting: true }]);
+  assert.deepEqual(computerNewer, [{ kind: "download", path: "note.md", preserveExisting: true }]);
+});
+

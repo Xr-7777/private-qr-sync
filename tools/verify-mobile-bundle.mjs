@@ -4,6 +4,7 @@ import * as http from "node:http";
 
 const code = await readFile(new URL("../main.js", import.meta.url), "utf8");
 const calls = [];
+const vaultEvents = [];
 let protocolHandler;
 let loadDataValue = null;
 let capturedServer;
@@ -12,7 +13,14 @@ class Plugin {
   constructor() {
     this.app = {
       secretStorage: { getSecret: () => null, setSecret: () => {} },
-      vault: { getName: () => "Mobile Test", getFiles: () => [] },
+      vault: {
+        getName: () => "Mobile Test",
+        getFiles: () => [],
+        on: (name) => {
+          vaultEvents.push(name);
+          return {};
+        },
+      },
     };
   }
   async loadData() { return loadDataValue; }
@@ -20,6 +28,9 @@ class Plugin {
   addSettingTab() {}
   addRibbonIcon() {}
   addCommand() {}
+  register() {}
+  registerEvent() {}
+  registerInterval() {}
   registerObsidianProtocolHandler(_action, handler) { protocolHandler = handler; }
 }
 
@@ -40,6 +51,11 @@ const obsidian = {
 };
 
 const module = { exports: {} };
+globalThis.window = {
+  clearTimeout() {},
+  setInterval: () => 1,
+  setTimeout: () => 1,
+};
 const localRequire = (id) => {
   calls.push(id);
   if (id === "obsidian") return obsidian;
@@ -61,6 +77,7 @@ assert.equal(typeof PluginClass, "function", "bundle should export the plugin cl
 const plugin = new PluginClass();
 await plugin.onload();
 assert.equal(typeof protocolHandler, "function", "mobile protocol handler should be registered");
+assert.deepEqual(vaultEvents, ["create", "modify"], "mobile load should watch local file changes");
 assert.deepEqual([...new Set(calls)], ["obsidian"], "mobile load must not resolve Node modules");
 console.log("Mobile bundle loaded without Node modules.");
 

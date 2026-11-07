@@ -13,11 +13,15 @@ import {
 } from "./shared/types";
 import { PrivateQrSyncSettingTab } from "./settings-tab";
 
+const AUTO_SYNC_DEBOUNCE_MS = 1500;
+const AUTO_SYNC_INTERVAL_MS = 60_000;
+
 export default class PrivateQrSyncPlugin extends Plugin {
   settings: PrivateQrSyncSettings = structuredClone(DEFAULT_SETTINGS);
   private server?: SyncServer;
   private readonly client = new SyncClient(this.app);
   private syncing = false;
+  private autoSyncTimer?: number;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -37,8 +41,16 @@ export default class PrivateQrSyncPlugin extends Plugin {
 
     if (Platform.isDesktopApp) {
       await this.restartServer();
-    } else if (this.settings.syncOnStartup && this.settings.mobilePeer) {
-      window.setTimeout(() => void this.syncNow(), 1500);
+    } else {
+      this.registerEvent(this.app.vault.on("create", () => this.scheduleAutoSync()));
+      this.registerEvent(this.app.vault.on("modify", () => this.scheduleAutoSync()));
+      this.registerInterval(window.setInterval(() => {
+        if (this.settings.syncOnStartup && this.settings.mobilePeer) void this.syncNow();
+      }, AUTO_SYNC_INTERVAL_MS));
+      this.register(() => {
+        if (this.autoSyncTimer !== undefined) window.clearTimeout(this.autoSyncTimer);
+      });
+      if (this.settings.syncOnStartup && this.settings.mobilePeer) this.scheduleAutoSync();
     }
   }
 
@@ -147,6 +159,15 @@ export default class PrivateQrSyncPlugin extends Plugin {
     if (peer) this.app.secretStorage.setSecret(peer.secretName, randomSecret());
     this.settings.mobilePeer = undefined;
     await this.saveSettings();
+  }
+
+  private scheduleAutoSync(): void {
+    if (!this.settings.syncOnStartup || !this.settings.mobilePeer || this.syncing) return;
+    if (this.autoSyncTimer !== undefined) window.clearTimeout(this.autoSyncTimer);
+    this.autoSyncTimer = window.setTimeout(() => {
+      this.autoSyncTimer = undefined;
+      if (this.settings.syncOnStartup) void this.syncNow();
+    }, AUTO_SYNC_DEBOUNCE_MS);
   }
 
   private async handlePairingLink(params: Record<string, string>): Promise<void> {
