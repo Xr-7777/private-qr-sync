@@ -45,7 +45,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
       this.registerEvent(this.app.vault.on("create", () => this.scheduleAutoSync()));
       this.registerEvent(this.app.vault.on("modify", () => this.scheduleAutoSync()));
       this.registerInterval(window.setInterval(() => {
-        if (this.settings.syncOnStartup && this.settings.mobilePeer) void this.syncNow();
+        if (this.settings.syncOnStartup && this.settings.mobilePeer) void this.syncNow(true);
       }, AUTO_SYNC_INTERVAL_MS));
       this.register(() => {
         if (this.autoSyncTimer !== undefined) window.clearTimeout(this.autoSyncTimer);
@@ -120,7 +120,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
     return { invite, uri: inviteToUri(invite) };
   }
 
-  async syncNow(): Promise<void> {
+  async syncNow(silent = false): Promise<void> {
     if (Platform.isDesktopApp) {
       new Notice("Open Private QR Sync on the iPhone to start a sync");
       return;
@@ -132,17 +132,19 @@ export default class PrivateQrSyncPlugin extends Plugin {
       return;
     }
     this.syncing = true;
-    const notice = new Notice("Private QR Sync is comparing files…", 0);
+    const notice = silent ? undefined : new Notice("Private QR Sync is comparing files…", 0);
     try {
       const report = await this.client.sync(peer, this.settings.deviceName, this.settings.maxFileSizeMb);
-      notice.setMessage(
+      notice?.setMessage(
         `Sync complete: ${report.downloaded} downloaded, ${report.uploaded} uploaded, ` +
         `${report.conflictsPreserved} conflicts preserved, ${report.skipped} skipped.`,
       );
     } catch (error) {
-      notice.setMessage(`Sync failed: ${error instanceof Error ? error.message : String(error)}`);
+      const message = error instanceof Error ? error.message : String(error);
+      if (notice) notice.setMessage(`Sync failed: ${message}`);
+      else console.error(`[private-qr-sync] automatic sync failed: ${message}`);
     } finally {
-      window.setTimeout(() => notice.hide(), 6000);
+      if (notice) window.setTimeout(() => notice.hide(), 6000);
       this.syncing = false;
     }
   }
@@ -166,7 +168,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
     if (this.autoSyncTimer !== undefined) window.clearTimeout(this.autoSyncTimer);
     this.autoSyncTimer = window.setTimeout(() => {
       this.autoSyncTimer = undefined;
-      if (this.settings.syncOnStartup) void this.syncNow();
+      if (this.settings.syncOnStartup) void this.syncNow(true);
     }, AUTO_SYNC_DEBOUNCE_MS);
   }
 

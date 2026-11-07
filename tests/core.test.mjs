@@ -3,6 +3,7 @@ import test from "node:test";
 import QRCode from "qrcode";
 import { decryptJson, encryptJson, randomSecret } from "../src/shared/encoding.ts";
 import { inviteFromParams, inviteToUri } from "../src/shared/invite.ts";
+import { getCachedHash } from "../src/shared/manifest-cache.ts";
 import { conflictPath, isSyncablePath, validateSyncPath } from "../src/shared/paths.ts";
 import { planSync } from "../src/shared/sync-plan.ts";
 
@@ -72,5 +73,13 @@ test("sync plan sends the newer copy in either direction", () => {
   );
   assert.deepEqual(phoneNewer, [{ kind: "upload", path: "note.md", preserveExisting: true }]);
   assert.deepEqual(computerNewer, [{ kind: "download", path: "note.md", preserveExisting: true }]);
+});
+
+test("manifest cache reuses only an unchanged file hash", () => {
+  const cached = { size: 10, mtime: 20, ctime: 30, hash: "same" };
+  assert.equal(getCachedHash(cached, 10, 20, 30), "same");
+  assert.equal(getCachedHash(cached, 11, 20, 30), undefined);
+  assert.equal(getCachedHash(cached, 10, 21, 30), undefined);
+  assert.equal(getCachedHash(cached, 10, 20, 31), undefined);
 });
 

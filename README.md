@@ -12,7 +12,8 @@ No note, attachment, account, signalling request, or telemetry is sent to a clou
 - Secrets use Obsidian SecretStorage and are not written to plugin `data.json`.
 - Requests and file bodies are encrypted with AES-256-GCM, even though the LAN endpoint uses HTTP.
 - Notes and attachments sync incrementally by SHA-256 hash.
-- While mobile Obsidian is open, phone edits trigger a sync and computer edits are checked every minute.
+- While mobile Obsidian is open, phone edits trigger a silent sync and computer edits are checked every minute.
+- Repeated checks reuse hashes for unchanged files instead of rereading the entire vault.
 - Before overwriting a changed file, the losing version is copied to `.private-qr-sync-conflicts/`.
 - `.obsidian`, `.trash`, and conflict backups are excluded.
 - Files over 20 MB are skipped by default.

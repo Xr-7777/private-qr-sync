@@ -1,21 +1,33 @@
 import { App, TFile } from "obsidian";
 import { base64ToBytes, bytesToBase64, hashBytes } from "./encoding";
+import { getCachedHash, type CachedFileHash } from "./manifest-cache";
 import { conflictPath, isSyncablePath, validateSyncPath } from "./paths";
 import type { FileEntry, FilePayload } from "./types";
 
+const manifestCaches = new WeakMap<App, Map<string, CachedFileHash>>();
+
 export async function buildManifest(app: App, maxFileSizeBytes: number): Promise<FileEntry[]> {
   const result: FileEntry[] = [];
+  const previous = manifestCaches.get(app) ?? new Map<string, CachedFileHash>();
+  const next = new Map<string, CachedFileHash>();
   for (const file of app.vault.getFiles()) {
     if (!isSyncablePath(file.path) || file.stat.size > maxFileSizeBytes) continue;
-    const data = await app.vault.readBinary(file);
+    const hash = getCachedHash(previous.get(file.path), file.stat.size, file.stat.mtime, file.stat.ctime) ??
+      await hashFile(app, file);
+    next.set(file.path, { size: file.stat.size, mtime: file.stat.mtime, ctime: file.stat.ctime, hash });
     result.push({
       path: file.path,
       size: file.stat.size,
       mtime: file.stat.mtime,
-      hash: await hashBytes(data),
+      hash,
     });
   }
+  manifestCaches.set(app, next);
   return result.sort((left, right) => left.path.localeCompare(right.path));
+}
+
+async function hashFile(app: App, file: TFile): Promise<string> {
+  return hashBytes(await app.vault.readBinary(file));
 }
 
 export async function readFilePayload(app: App, path: string, maxFileSizeBytes: number): Promise<FilePayload> {
