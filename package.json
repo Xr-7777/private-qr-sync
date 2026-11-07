@@ -1,0 +1,31 @@
+{
+  "name": "private-qr-sync",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Encrypted direct LAN sync for Obsidian with QR pairing.",
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "node esbuild.config.mjs",
+    "dev": "node esbuild.config.mjs --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test tests/*.test.mjs",
+    "verify:mobile": "node tools/verify-mobile-bundle.mjs",
+    "check": "npm run typecheck && npm test && npm run build && npm run verify:mobile"
+  },
+  "dependencies": {
+    "qrcode": "^1.5.4"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "@types/qrcode": "^1.5.5",
+    "esbuild": "^0.25.0",
+    "obsidian": "^1.13.1",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.3"
+  }
+}
+

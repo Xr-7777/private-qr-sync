@@ -1,0 +1,18 @@
+.private-qr-sync-qr {
+  display: block;
+  width: min(360px, 100%);
+  height: auto;
+  margin: var(--size-4-4) auto;
+  background: white;
+  padding: var(--size-4-2);
+  border-radius: var(--radius-m);
+}
+
+.private-qr-sync-warning {
+  color: var(--text-warning);
+}
+
+.private-qr-sync-error {
+  color: var(--text-error);
+}
+
