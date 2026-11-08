@@ -99,7 +99,7 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
       }));
     new Setting(this.containerEl)
       .setName("Automatic two-way sync")
-      .setDesc("Uploads phone edits after they change and checks for computer edits every minute while Obsidian is open. iOS pauses plugins in the background.")
+      .setDesc("Uploads phone edits after they change and detects computer edits within about two seconds while Obsidian is open. iOS pauses plugins in the background.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.syncOnStartup)
         .onChange(async (value) => {

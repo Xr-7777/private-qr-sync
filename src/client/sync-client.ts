@@ -41,6 +41,13 @@ export class SyncClient {
     }
   }
 
+  async getRevision(peer: MobilePeer): Promise<string> {
+    const secret = this.app.secretStorage.getSecret(peer.secretName);
+    if (!secret) throw new Error("The pairing secret is missing. Scan a new QR code.");
+    const result = await this.post<{ revision: string }>(peer.baseUrl, "/v1/revision", peer.id, secret, {});
+    return result.revision;
+  }
+
   async sync(peer: MobilePeer, deviceName: string, maxFileSizeMb: number): Promise<SyncReport> {
     const secret = this.app.secretStorage.getSecret(peer.secretName);
     if (!secret) throw new Error("The pairing secret is missing. Scan a new QR code.");

@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as buffer from "node:buffer";
 import { readFile } from "node:fs/promises";
 import * as http from "node:http";
 
@@ -8,11 +9,15 @@ const vaultEvents = [];
 let protocolHandler;
 let loadDataValue = null;
 let capturedServer;
+const secrets = new Map();
 
 class Plugin {
   constructor() {
     this.app = {
-      secretStorage: { getSecret: () => null, setSecret: () => {} },
+      secretStorage: {
+        getSecret: (name) => secrets.get(name) ?? null,
+        setSecret: (name, value) => secrets.set(name, value),
+      },
       vault: {
         getName: () => "Mobile Test",
         getFiles: () => [],
@@ -68,6 +73,7 @@ const localRequire = (id) => {
       },
     };
   }
+  if (id === "buffer") return buffer;
   throw new Error(`Mobile bundle unexpectedly required ${id}`);
 };
 
@@ -81,7 +87,15 @@ assert.deepEqual(vaultEvents, ["create", "modify"], "mobile load should watch lo
 assert.deepEqual([...new Set(calls)], ["obsidian"], "mobile load must not resolve Node modules");
 console.log("Mobile bundle loaded without Node modules.");
 
-loadDataValue = { port: 0, deviceName: "Desktop test" };
+const peerId = "a".repeat(24);
+const secretName = "private-qr-sync-peer-test";
+const peerSecret = "A".repeat(43);
+secrets.set(secretName, peerSecret);
+loadDataValue = {
+  port: 0,
+  deviceName: "Desktop test",
+  pairedPeers: [{ id: peerId, name: "Mobile test", secretName, createdAt: Date.now() }],
+};
 obsidian.Platform.isDesktopApp = true;
 obsidian.Platform.isMobile = false;
 obsidian.Platform.isIosApp = false;
@@ -92,6 +106,26 @@ assert.equal(typeof address, "object", "desktop server should listen on a real p
 const health = await fetch(`http://127.0.0.1:${address.port}/health`);
 assert.equal(health.status, 200);
 assert.deepEqual(await health.json(), { ok: true, service: "private-qr-sync", version: 1 });
+
+obsidian.requestUrl = async (options) => {
+  const response = await fetch(options.url, {
+    method: options.method,
+    headers: options.headers,
+    body: options.body,
+  });
+  return { status: response.status, json: await response.json() };
+};
+const peer = {
+  id: peerId,
+  name: "Desktop test",
+  baseUrl: `http://127.0.0.1:${address.port}`,
+  secretName,
+  vaultId: "Mobile Test",
+};
+const revisionBefore = await plugin.client.getRevision(peer);
+desktopPlugin.server.markChanged();
+const revisionAfter = await plugin.client.getRevision(peer);
+assert.notEqual(revisionAfter, revisionBefore, "desktop changes should advance the encrypted revision token");
 await desktopPlugin.onunload();
-console.log("Desktop bundle served the health endpoint.");
+console.log("Desktop bundle served health and encrypted revision endpoints.");
 

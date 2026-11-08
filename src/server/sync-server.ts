@@ -26,6 +26,7 @@ export interface ServerDependencies {
 export class SyncServer {
   private server?: Server;
   private readonly seenNonces = new Map<string, number>();
+  private revision = randomHex(8);
 
   constructor(private readonly dependencies: ServerDependencies) {}
 
@@ -49,6 +50,10 @@ export class SyncServer {
     this.server = undefined;
     if (!active) return;
     await new Promise<void>((resolve) => active.close(() => resolve()));
+  }
+
+  markChanged(): void {
+    this.revision = randomHex(8);
   }
 
   private async route(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -88,6 +93,9 @@ export class SyncServer {
     const settings = this.dependencies.getSettings();
     const maxBytes = settings.maxFileSizeMb * 1024 * 1024;
     switch (url.pathname) {
+      case "/v1/revision":
+        result = { revision: this.revision };
+        break;
       case "/v1/manifest":
         result = await buildManifest(this.dependencies.app, maxBytes);
         break;

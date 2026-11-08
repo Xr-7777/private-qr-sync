@@ -5,6 +5,7 @@ import { decryptJson, encryptJson, randomSecret } from "../src/shared/encoding.t
 import { inviteFromParams, inviteToUri } from "../src/shared/invite.ts";
 import { getCachedHash } from "../src/shared/manifest-cache.ts";
 import { conflictPath, isSyncablePath, validateSyncPath } from "../src/shared/paths.ts";
+import { shouldSyncRevision } from "../src/shared/revision.ts";
 import { planSync } from "../src/shared/sync-plan.ts";
 
 test("AES-GCM round trip rejects a different secret", async () => {
@@ -81,5 +82,11 @@ test("manifest cache reuses only an unchanged file hash", () => {
   assert.equal(getCachedHash(cached, 11, 20, 30), undefined);
   assert.equal(getCachedHash(cached, 10, 21, 30), undefined);
   assert.equal(getCachedHash(cached, 10, 20, 31), undefined);
+});
+
+test("desktop revision triggers sync only after a change", () => {
+  assert.equal(shouldSyncRevision(undefined, "first"), true);
+  assert.equal(shouldSyncRevision("first", "first"), false);
+  assert.equal(shouldSyncRevision("first", "second"), true);
 });
 

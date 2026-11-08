@@ -1,10 +1,12 @@
-import { Notice, Platform, Plugin } from "obsidian";
+import { Notice, Platform, Plugin, type TAbstractFile } from "obsidian";
 import { SyncClient } from "./client/sync-client";
 import { PairingModal } from "./pairing-modal";
 import { getLanAddresses } from "./server/network";
 import { SyncServer } from "./server/sync-server";
 import { inviteFromParams, inviteToUri } from "./shared/invite";
 import { randomHex, randomSecret } from "./shared/encoding";
+import { isSyncablePath } from "./shared/paths";
+import { shouldSyncRevision } from "./shared/revision";
 import {
   DEFAULT_SETTINGS,
   PLUGIN_ID,
@@ -14,7 +16,7 @@ import {
 import { PrivateQrSyncSettingTab } from "./settings-tab";
 
 const AUTO_SYNC_DEBOUNCE_MS = 1500;
-const AUTO_SYNC_INTERVAL_MS = 60_000;
+const DESKTOP_CHANGE_POLL_MS = 2000;
 
 export default class PrivateQrSyncPlugin extends Plugin {
   settings: PrivateQrSyncSettings = structuredClone(DEFAULT_SETTINGS);
@@ -22,6 +24,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
   private readonly client = new SyncClient(this.app);
   private syncing = false;
   private autoSyncTimer?: number;
+  private lastDesktopRevision?: string;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -41,12 +44,13 @@ export default class PrivateQrSyncPlugin extends Plugin {
 
     if (Platform.isDesktopApp) {
       await this.restartServer();
+      this.registerDesktopChangeTracking();
     } else {
       this.registerEvent(this.app.vault.on("create", () => this.scheduleAutoSync()));
       this.registerEvent(this.app.vault.on("modify", () => this.scheduleAutoSync()));
       this.registerInterval(window.setInterval(() => {
-        if (this.settings.syncOnStartup && this.settings.mobilePeer) void this.syncNow(true);
-      }, AUTO_SYNC_INTERVAL_MS));
+        void this.pollForDesktopChanges();
+      }, DESKTOP_CHANGE_POLL_MS));
       this.register(() => {
         if (this.autoSyncTimer !== undefined) window.clearTimeout(this.autoSyncTimer);
       });
@@ -134,7 +138,9 @@ export default class PrivateQrSyncPlugin extends Plugin {
     this.syncing = true;
     const notice = silent ? undefined : new Notice("Private QR Sync is comparing files…", 0);
     try {
+      const revision = await this.client.getRevision(peer);
       const report = await this.client.sync(peer, this.settings.deviceName, this.settings.maxFileSizeMb);
+      this.lastDesktopRevision = revision;
       notice?.setMessage(
         `Sync complete: ${report.downloaded} downloaded, ${report.uploaded} uploaded, ` +
         `${report.conflictsPreserved} conflicts preserved, ${report.skipped} skipped.`,
@@ -160,7 +166,29 @@ export default class PrivateQrSyncPlugin extends Plugin {
     const peer = this.settings.mobilePeer;
     if (peer) this.app.secretStorage.setSecret(peer.secretName, randomSecret());
     this.settings.mobilePeer = undefined;
+    this.lastDesktopRevision = undefined;
     await this.saveSettings();
+  }
+
+  private registerDesktopChangeTracking(): void {
+    const markChanged = (file: TAbstractFile): void => {
+      if (isSyncablePath(file.path)) this.server?.markChanged();
+    };
+    this.registerEvent(this.app.vault.on("create", markChanged));
+    this.registerEvent(this.app.vault.on("modify", markChanged));
+    this.registerEvent(this.app.vault.on("delete", markChanged));
+    this.registerEvent(this.app.vault.on("rename", markChanged));
+  }
+
+  private async pollForDesktopChanges(): Promise<void> {
+    const peer = this.settings.mobilePeer;
+    if (!this.settings.syncOnStartup || !peer || this.syncing) return;
+    try {
+      const revision = await this.client.getRevision(peer);
+      if (shouldSyncRevision(this.lastDesktopRevision, revision)) await this.syncNow(true);
+    } catch {
+      // The computer being asleep or off-network is expected during mobile use.
+    }
   }
 
   private scheduleAutoSync(): void {
@@ -184,6 +212,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
       }
       const peer = await this.client.pair(invite, this.settings.deviceName);
       this.settings.mobilePeer = peer;
+      this.lastDesktopRevision = undefined;
       await this.saveSettings();
       new Notice(`Paired with ${peer.name}. Starting the first sync…`);
       await this.syncNow();
