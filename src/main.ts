@@ -1,5 +1,6 @@
 import { Notice, Platform, Plugin, type TAbstractFile } from "obsidian";
 import { SyncClient } from "./client/sync-client";
+import { confirmMobilePairing } from "./mobile-pairing-modal";
 import { PairingModal } from "./pairing-modal";
 import { getLanAddresses } from "./server/network";
 import { SyncServer } from "./server/sync-server";
@@ -25,6 +26,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
   private syncing = false;
   private autoSyncTimer?: number;
   private lastDesktopRevision?: string;
+  private serverAddress?: string;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -78,6 +80,13 @@ export default class PrivateQrSyncPlugin extends Plugin {
   async restartServer(): Promise<void> {
     if (!Platform.isDesktopApp) return;
     await this.server?.stop();
+    this.serverAddress = undefined;
+    const address = getLanAddresses()[0];
+    if (!address) {
+      this.server = undefined;
+      new Notice("Private QR Sync could not start: no private LAN address was found");
+      return;
+    }
     this.server = new SyncServer({
       app: this.app,
       getSettings: () => this.settings,
@@ -86,10 +95,12 @@ export default class PrivateQrSyncPlugin extends Plugin {
       setSecret: (name, value) => this.app.secretStorage.setSecret(name, value),
     });
     try {
-      await this.server.start(this.settings.port);
-      new Notice(`Private QR Sync is listening on port ${this.settings.port}`);
+      await this.server.start(this.settings.port, address);
+      this.serverAddress = address;
+      new Notice(`Private QR Sync is listening on ${address}:${this.settings.port}`);
     } catch (error) {
       this.server = undefined;
+      this.serverAddress = undefined;
       new Notice(`Private QR Sync could not start: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
@@ -103,8 +114,8 @@ export default class PrivateQrSyncPlugin extends Plugin {
   }
 
   async createPairingInvite(): Promise<{ invite: PairingInvite; uri: string }> {
-    const address = getLanAddresses()[0];
-    if (!address) throw new Error("No private IPv4 address was found. Connect the computer to Wi-Fi or Ethernet.");
+    const address = this.serverAddress;
+    if (!address) throw new Error("The private sync service is not running. Restart it after connecting to Wi-Fi or Ethernet.");
     const pairingId = randomHex(12);
     const pairingSecret = randomSecret();
     const secretName = "private-qr-sync-bootstrap";
@@ -209,6 +220,10 @@ export default class PrivateQrSyncPlugin extends Plugin {
       const invite = inviteFromParams(params);
       if (invite.vaultId !== this.app.vault.getName()) {
         throw new Error(`This QR code is for the “${invite.vaultId}” vault. Open or create a mobile vault with the same name first.`);
+      }
+      if (!await confirmMobilePairing(this.app, invite)) {
+        new Notice("Pairing cancelled");
+        return;
       }
       const peer = await this.client.pair(invite, this.settings.deviceName);
       this.settings.mobilePeer = peer;

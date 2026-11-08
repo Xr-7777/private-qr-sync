@@ -8,9 +8,11 @@ No note, attachment, account, signalling request, or telemetry is sent to a clou
 
 - Desktop is the LAN host; mobile is a client because iOS cannot open a Node HTTP server.
 - QR pairing uses `obsidian://private-qr-sync` and expires after ten minutes.
+- Mobile accepts only private IPv4 pairing addresses and requires confirmation before the first sync.
 - The bootstrap invitation is single-use. Every paired mobile device receives a separate revocable key.
 - Secrets use Obsidian SecretStorage and are not written to plugin `data.json`.
 - Requests and file bodies are encrypted with AES-256-GCM, even though the LAN endpoint uses HTTP.
+- Encrypted responses are bound to the exact request nonce and endpoint to reject replayed or swapped responses.
 - Notes and attachments sync incrementally by SHA-256 hash.
 - While mobile Obsidian is open, phone edits trigger a silent sync and computer edits are detected within about two seconds.
 - The mobile poll transfers only an encrypted revision token; a full vault comparison runs only after a change.

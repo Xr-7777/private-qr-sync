@@ -63,6 +63,13 @@ export interface SecureMessage<T> {
   payload: T;
 }
 
+export interface SecureResponse<T> {
+  timestamp: number;
+  requestNonce: string;
+  path: string;
+  payload: T;
+}
+
 export interface FileEntry {
   path: string;
   size: number;

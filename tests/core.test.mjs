@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import QRCode from "qrcode";
-import { decryptJson, encryptJson, randomSecret } from "../src/shared/encoding.ts";
+import { decryptJson, encryptJson, randomSecret, validateSecureResponse } from "../src/shared/encoding.ts";
 import { inviteFromParams, inviteToUri } from "../src/shared/invite.ts";
 import { getCachedHash } from "../src/shared/manifest-cache.ts";
 import { conflictPath, isSyncablePath, validateSyncPath } from "../src/shared/paths.ts";
@@ -36,6 +36,16 @@ test("pairing URI stays camera-friendly, round trips, and enforces expiry", () =
   assert.ok(uriText.length < 200);
   assert.ok(QRCode.create(uriText, { errorCorrectionLevel: "M" }).modules.size <= 61);
   assert.throws(() => inviteFromParams({ ...params, s: `${params.s}x` }));
+  assert.throws(() => inviteFromParams({ ...params, h: "example.com:27123" }), /private IPv4/u);
+  assert.throws(() => inviteFromParams({ ...params, h: "127.0.0.1:27123" }), /private IPv4/u);
+});
+
+test("encrypted responses are bound to one request and endpoint", () => {
+  const response = { timestamp: 1000, requestNonce: "a".repeat(32), path: "/v1/read", payload: { ok: true } };
+  assert.deepEqual(validateSecureResponse(response, "/v1/read", "a".repeat(32), 1000), { ok: true });
+  assert.throws(() => validateSecureResponse(response, "/v1/write", "a".repeat(32), 1000), /does not match/u);
+  assert.throws(() => validateSecureResponse(response, "/v1/read", "b".repeat(32), 1000), /does not match/u);
+  assert.throws(() => validateSecureResponse(response, "/v1/read", "a".repeat(32), 999_999), /timestamp/u);
 });
 
 test("vault paths cannot escape or expose Obsidian configuration", () => {

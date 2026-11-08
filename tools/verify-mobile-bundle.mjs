@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import * as buffer from "node:buffer";
 import { readFile } from "node:fs/promises";
 import * as http from "node:http";
+import * as os from "node:os";
 
 const code = await readFile(new URL("../main.js", import.meta.url), "utf8");
 const calls = [];
@@ -73,6 +74,7 @@ const localRequire = (id) => {
       },
     };
   }
+  if (id === "os") return os;
   if (id === "buffer") return buffer;
   throw new Error(`Mobile bundle unexpectedly required ${id}`);
 };
@@ -103,9 +105,16 @@ const desktopPlugin = new PluginClass();
 await desktopPlugin.onload();
 const address = capturedServer?.address();
 assert.equal(typeof address, "object", "desktop server should listen on a real port");
-const health = await fetch(`http://127.0.0.1:${address.port}/health`);
+assert.notEqual(address.address, "0.0.0.0", "desktop server should bind only to the selected LAN address");
+const health = await fetch(`http://${address.address}:${address.port}/health`);
 assert.equal(health.status, 200);
-assert.deepEqual(await health.json(), { ok: true, service: "private-qr-sync", version: 1 });
+assert.deepEqual(await health.json(), { ok: true, service: "private-qr-sync", version: 2 });
+const unauthorized = await fetch(`http://${address.address}:${address.port}/v1/revision`, {
+  method: "POST",
+  headers: { "Content-Type": "application/json", "X-Pair-Id": "unknown" },
+  body: "{}",
+});
+assert.equal(unauthorized.status, 401, "unknown devices should be rejected before encrypted body processing");
 
 obsidian.requestUrl = async (options) => {
   const response = await fetch(options.url, {
@@ -118,7 +127,7 @@ obsidian.requestUrl = async (options) => {
 const peer = {
   id: peerId,
   name: "Desktop test",
-  baseUrl: `http://127.0.0.1:${address.port}`,
+  baseUrl: `http://${address.address}:${address.port}`,
   secretName,
   vaultId: "Mobile Test",
 };

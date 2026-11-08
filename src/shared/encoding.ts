@@ -1,7 +1,8 @@
-import type { EncryptedEnvelope, SecureMessage } from "./types";
+import type { EncryptedEnvelope, SecureMessage, SecureResponse } from "./types";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
+export const MAX_CLOCK_SKEW_MS = 2 * 60 * 1000;
 
 export function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
@@ -78,13 +79,28 @@ export async function decryptJson<T>(secret: string, envelope: EncryptedEnvelope
   return JSON.parse(decoder.decode(plaintext)) as T;
 }
 
-export async function encryptMessage<T>(secret: string, payload: T): Promise<EncryptedEnvelope> {
-  const message: SecureMessage<T> = {
+export function createSecureMessage<T>(payload: T): SecureMessage<T> {
+  return {
     timestamp: Date.now(),
     nonce: randomHex(16),
     payload,
   };
-  return encryptJson(secret, message);
+}
+
+export function validateSecureResponse<T>(
+  response: SecureResponse<T>,
+  expectedPath: string,
+  expectedNonce: string,
+  now = Date.now(),
+): T {
+  if (!response || typeof response !== "object" || !("payload" in response)) throw new Error("Invalid encrypted response");
+  if (!Number.isFinite(response.timestamp) || Math.abs(now - response.timestamp) > MAX_CLOCK_SKEW_MS) {
+    throw new Error("Response timestamp is outside the allowed window");
+  }
+  if (response.requestNonce !== expectedNonce || response.path !== expectedPath) {
+    throw new Error("Encrypted response does not match the request");
+  }
+  return response.payload;
 }
 
 export async function hashBytes(data: ArrayBuffer): Promise<string> {

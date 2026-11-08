@@ -1,5 +1,5 @@
 import { App, requestUrl } from "obsidian";
-import { decryptJson, encryptMessage } from "../shared/encoding";
+import { createSecureMessage, decryptJson, encryptJson, validateSecureResponse } from "../shared/encoding";
 import { planSync } from "../shared/sync-plan";
 import type {
   EncryptedEnvelope,
@@ -8,6 +8,7 @@ import type {
   MobilePeer,
   PairingInvite,
   PairResponse,
+  SecureResponse,
   SyncReport,
 } from "../shared/types";
 import { buildManifest, readFilePayload, writeFilePayload } from "../shared/vault";
@@ -36,7 +37,7 @@ export class SyncClient {
 
   async test(peer: MobilePeer): Promise<void> {
     const response = await requestUrl({ url: `${trimSlash(peer.baseUrl)}/health`, method: "GET", throw: false });
-    if (response.status !== 200 || response.json?.service !== "private-qr-sync") {
+    if (response.status !== 200 || response.json?.service !== "private-qr-sync" || response.json?.version !== 2) {
       throw new Error(`Computer did not answer correctly (${response.status})`);
     }
   }
@@ -86,7 +87,8 @@ export class SyncClient {
     secret: string,
     payload: unknown,
   ): Promise<T> {
-    const encrypted = await encryptMessage(secret, payload);
+    const message = createSecureMessage(payload);
+    const encrypted = await encryptJson(secret, message);
     const response = await requestUrl({
       url: `${trimSlash(baseUrl)}${path}`,
       method: "POST",
@@ -98,7 +100,8 @@ export class SyncClient {
       const message = typeof response.json?.error === "string" ? response.json.error : `HTTP ${response.status}`;
       throw new Error(message);
     }
-    return decryptJson<T>(secret, response.json as EncryptedEnvelope);
+    const result = await decryptJson<SecureResponse<T>>(secret, response.json as EncryptedEnvelope);
+    return validateSecureResponse(result, path, message.nonce);
   }
 }
 

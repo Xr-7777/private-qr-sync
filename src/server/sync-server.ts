@@ -1,6 +1,6 @@
 import type { IncomingMessage, Server, ServerResponse } from "http";
 import type { App } from "obsidian";
-import { decryptJson, encryptJson, randomHex, randomSecret } from "../shared/encoding";
+import { decryptJson, encryptJson, MAX_CLOCK_SKEW_MS, randomHex, randomSecret } from "../shared/encoding";
 import { buildManifest, readFilePayload, writeFilePayload } from "../shared/vault";
 import type {
   EncryptedEnvelope,
@@ -9,11 +9,13 @@ import type {
   PeerRecord,
   PrivateQrSyncSettings,
   SecureMessage,
+  SecureResponse,
 } from "../shared/types";
 import { nodeRequire } from "./node-modules";
 
-const CLOCK_SKEW_MS = 2 * 60 * 1000;
 const NONCE_TTL_MS = 5 * 60 * 1000;
+const SMALL_REQUEST_LIMIT = 64 * 1024;
+const ROUTES = new Set(["/v1/pair", "/v1/revision", "/v1/manifest", "/v1/read", "/v1/write"]);
 
 export interface ServerDependencies {
   app: App;
@@ -30,7 +32,7 @@ export class SyncServer {
 
   constructor(private readonly dependencies: ServerDependencies) {}
 
-  async start(port: number): Promise<void> {
+  async start(port: number, host: string): Promise<void> {
     if (this.server) return;
     const http = nodeRequire<typeof import("http")>("http");
     this.server = http.createServer((request, response) => {
@@ -41,7 +43,7 @@ export class SyncServer {
     });
     await new Promise<void>((resolve, reject) => {
       this.server?.once("error", reject);
-      this.server?.listen(port, "0.0.0.0", () => resolve());
+      this.server?.listen(port, host, () => resolve());
     });
   }
 
@@ -59,16 +61,46 @@ export class SyncServer {
   private async route(request: IncomingMessage, response: ServerResponse): Promise<void> {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (request.method === "GET" && url.pathname === "/health") {
-      this.sendJson(response, 200, { ok: true, service: "private-qr-sync", version: 1 });
+      this.sendJson(response, 200, { ok: true, service: "private-qr-sync", version: 2 });
       return;
     }
     if (request.method !== "POST") {
       this.sendJson(response, 405, { error: "Method not allowed" });
       return;
     }
+    if (!ROUTES.has(url.pathname)) {
+      this.sendJson(response, 404, { error: "Not found" });
+      return;
+    }
+    if (!(request.headers["content-type"] ?? "").toString().toLowerCase().startsWith("application/json")) {
+      this.sendJson(response, 415, { error: "Content-Type must be application/json" });
+      return;
+    }
 
     const peerId = this.readHeader(request, "x-pair-id");
-    const body = await this.readBody(request, this.maxRequestBytes());
+    let authenticatedPeer: PeerRecord | undefined;
+    let authenticatedSecret: string | null = null;
+    if (url.pathname === "/v1/pair") {
+      const pending = this.dependencies.getSettings().pendingPairing;
+      if (!pending || pending.id !== peerId || pending.expiresAt < Date.now() ||
+          !this.dependencies.getSecret(pending.secretName)) {
+        this.sendJson(response, 401, { error: "Pairing invitation is invalid or expired" });
+        return;
+      }
+    } else {
+      authenticatedPeer = this.dependencies.getSettings().pairedPeers.find((item) => item.id === peerId);
+      if (!authenticatedPeer) {
+        this.sendJson(response, 401, { error: "Unknown device" });
+        return;
+      }
+      authenticatedSecret = this.dependencies.getSecret(authenticatedPeer.secretName);
+      if (!authenticatedSecret) {
+        this.sendJson(response, 401, { error: "Device secret is unavailable" });
+        return;
+      }
+    }
+
+    const body = await this.readBody(request, url.pathname === "/v1/write" ? this.maxRequestBytes() : SMALL_REQUEST_LIMIT);
     const envelope = JSON.parse(body) as EncryptedEnvelope;
 
     if (url.pathname === "/v1/pair") {
@@ -76,16 +108,9 @@ export class SyncServer {
       return;
     }
 
-    const peer = this.dependencies.getSettings().pairedPeers.find((item) => item.id === peerId);
-    if (!peer) {
-      this.sendJson(response, 401, { error: "Unknown device" });
-      return;
-    }
-    const secret = this.dependencies.getSecret(peer.secretName);
-    if (!secret) {
-      this.sendJson(response, 401, { error: "Device secret is unavailable" });
-      return;
-    }
+    const peer = authenticatedPeer;
+    const secret = authenticatedSecret;
+    if (!peer || !secret) throw new Error("Authenticated peer state is unavailable");
     const message = await decryptJson<SecureMessage<unknown>>(secret, envelope);
     this.validateMessage(peerId, message);
 
@@ -120,7 +145,13 @@ export class SyncServer {
         this.sendJson(response, 404, { error: "Not found" });
         return;
     }
-    this.sendJson(response, 200, await encryptJson(secret, result));
+    const secureResponse: SecureResponse<unknown> = {
+      timestamp: Date.now(),
+      requestNonce: message.nonce,
+      path: url.pathname,
+      payload: result,
+    };
+    this.sendJson(response, 200, await encryptJson(secret, secureResponse));
   }
 
   private async handlePair(peerId: string, envelope: EncryptedEnvelope, response: ServerResponse): Promise<void> {
@@ -159,11 +190,17 @@ export class SyncServer {
       desktopName: settings.deviceName,
       vaultId: this.dependencies.app.vault.getName(),
     };
-    this.sendJson(response, 200, await encryptJson(bootstrapSecret, result));
+    const secureResponse: SecureResponse<PairResponse> = {
+      timestamp: Date.now(),
+      requestNonce: message.nonce,
+      path: "/v1/pair",
+      payload: result,
+    };
+    this.sendJson(response, 200, await encryptJson(bootstrapSecret, secureResponse));
   }
 
   private validateMessage(peerId: string, message: SecureMessage<unknown>): void {
-    if (Math.abs(Date.now() - message.timestamp) > CLOCK_SKEW_MS) throw new Error("Request timestamp is outside the allowed window");
+    if (Math.abs(Date.now() - message.timestamp) > MAX_CLOCK_SKEW_MS) throw new Error("Request timestamp is outside the allowed window");
     if (!/^[a-f0-9]{32}$/u.test(message.nonce)) throw new Error("Invalid request nonce");
     const nonceKey = `${peerId}:${message.nonce}`;
     if (this.seenNonces.has(nonceKey)) throw new Error("Request replay detected");
