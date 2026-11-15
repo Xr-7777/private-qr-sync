@@ -67,7 +67,14 @@ export class SyncClient {
       this.readRemoteDeletions(peer, secret),
     ]);
     const actions = planSync(localFiles, remoteFiles, localDeletions, deletionState.records);
-    const report: SyncReport = { uploaded: 0, downloaded: 0, deleted: 0, conflictsPreserved: 0, skipped: 0 };
+    const report: SyncReport = {
+      uploaded: 0,
+      downloaded: 0,
+      deleted: 0,
+      conflictsPreserved: 0,
+      skipped: 0,
+      failures: [],
+    };
     let deletions = localDeletions;
 
     for (const action of actions) {
@@ -76,6 +83,7 @@ export class SyncClient {
           const outcome = await applyDeletion(this.app, action.deletion, peer.name);
           if (!outcome.accepted) {
             report.skipped += 1;
+            report.failures.push({ path: action.path, reason: "A newer copy appeared during sync" });
             continue;
           }
           deletions = upsertDeletion(deletions, action.deletion);
@@ -88,6 +96,7 @@ export class SyncClient {
           );
           if (!outcome.accepted) {
             report.skipped += 1;
+            report.failures.push({ path: action.path, reason: "A newer copy appeared during sync" });
             continue;
           }
           deletions = upsertDeletion(deletions, action.deletion);
@@ -114,6 +123,7 @@ export class SyncClient {
       } catch (error) {
         console.error(`[private-qr-sync] failed to sync ${action.path}`, error);
         report.skipped += 1;
+        report.failures.push({ path: action.path, reason: error instanceof Error ? error.message : String(error) });
       }
     }
     return { report, deletions };

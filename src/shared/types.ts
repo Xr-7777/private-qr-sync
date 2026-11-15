@@ -104,6 +104,12 @@ export interface SyncReport {
   deleted: number;
   conflictsPreserved: number;
   skipped: number;
+  failures: SyncFailure[];
+}
+
+export interface SyncFailure {
+  path: string;
+  reason: string;
 }
 
 export interface SyncResult {

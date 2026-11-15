@@ -58,8 +58,7 @@ export async function writeFilePayload(
     const current = await app.vault.readBinary(existing);
     if (await hashBytes(current) !== await hashBytes(bytes.buffer as ArrayBuffer)) {
       const backup = conflictPath(path, backupDeviceName);
-      await ensureParentFolders(app, backup);
-      await app.vault.createBinary(backup, current);
+      await writeConflictBackup(app, backup, current);
       preserved = true;
     }
     await app.vault.modifyBinary(existing, bytes.buffer as ArrayBuffer, { mtime: payload.mtime });
@@ -85,8 +84,7 @@ export async function applyDeletion(
   if (existing.stat.mtime > record.deletedAt) return { accepted: false, deleted: false, preserved: false };
 
   const backup = conflictPath(path, `${backupDeviceName}-deleted`);
-  await ensureParentFolders(app, backup);
-  await app.vault.createBinary(backup, await app.vault.readBinary(existing));
+  await writeConflictBackup(app, backup, await app.vault.readBinary(existing));
   await app.vault.delete(existing);
   return { accepted: true, deleted: true, preserved: true };
 }
@@ -99,5 +97,18 @@ async function ensureParentFolders(app: App, path: string): Promise<void> {
     current = current ? `${current}/${part}` : part;
     if (!app.vault.getAbstractFileByPath(current)) await app.vault.createFolder(current);
   }
+}
+
+async function writeConflictBackup(app: App, path: string, data: ArrayBuffer): Promise<void> {
+  const parts = path.split("/");
+  parts.pop();
+  let current = "";
+  for (const part of parts) {
+    current = current ? `${current}/${part}` : part;
+    if (!await app.vault.adapter.exists(current)) await app.vault.adapter.mkdir(current);
+  }
+  let destination = path;
+  for (let suffix = 2; await app.vault.adapter.exists(destination); suffix += 1) destination = `${path}.${suffix}`;
+  await app.vault.adapter.writeBinary(destination, data);
 }
 

@@ -53,6 +53,11 @@ class Plugin {
           folders.set(path, folder);
           return folder;
         },
+        adapter: {
+          exists: async (path) => files.has(path) || folders.has(path),
+          mkdir: async (path) => { folders.set(path, new TFolder(path)); },
+          writeBinary: async (path, data) => { files.set(path, new TFile(path, data)); },
+        },
         on: (name) => {
           vaultEvents.push(name);
           return {};
@@ -168,7 +173,7 @@ const revisionAfter = await plugin.client.getRevision(peer);
 assert.notEqual(revisionAfter, revisionBefore, "desktop changes should advance the encrypted revision token");
 const emptySync = await plugin.client.sync(peer, "Mobile test", 20, []);
 assert.deepEqual(emptySync, {
-  report: { uploaded: 0, downloaded: 0, deleted: 0, conflictsPreserved: 0, skipped: 0 },
+  report: { uploaded: 0, downloaded: 0, deleted: 0, conflictsPreserved: 0, skipped: 0, failures: [] },
   deletions: [],
 }, "new clients should exchange an encrypted deletion journal");
 const deletion = { path: "deleted.md", deletedAt: Date.now(), deviceName: "Mobile test" };

@@ -148,6 +148,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
     this.syncing = true;
     this.syncDeletionChanges.clear();
     const notice = silent ? undefined : new Notice("Private QR Sync is comparing files…", 0);
+    let noticeDuration = 6000;
     try {
       const revision = await this.client.getRevision(peer);
       const result = await this.client.sync(
@@ -166,14 +167,16 @@ export default class PrivateQrSyncPlugin extends Plugin {
       this.lastDesktopRevision = revision;
       notice?.setMessage(
         `Sync complete: ${report.downloaded} downloaded, ${report.uploaded} uploaded, ${report.deleted} deleted, ` +
-        `${report.conflictsPreserved} conflicts preserved, ${report.skipped} skipped.`,
+        `${report.conflictsPreserved} conflicts preserved, ${report.skipped} skipped.` +
+        (report.failures[0] ? ` First failure: ${report.failures[0].path} — ${report.failures[0].reason}` : ""),
       );
+      if (report.failures.length > 0) noticeDuration = 15000;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (notice) notice.setMessage(`Sync failed: ${message}`);
       else console.error(`[private-qr-sync] automatic sync failed: ${message}`);
     } finally {
-      if (notice) window.setTimeout(() => notice.hide(), 6000);
+      if (notice) window.setTimeout(() => notice.hide(), noticeDuration);
       this.syncing = false;
       if (this.pendingSync) {
         this.pendingSync = false;

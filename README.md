@@ -19,6 +19,7 @@ No note, attachment, account, signalling request, or telemetry is sent to a clou
 - Repeated checks reuse hashes for unchanged files instead of rereading the entire vault.
 - Before overwriting a changed file, the losing version is copied to `.private-qr-sync-conflicts/`.
 - Deletes sync in both directions. Before removing the other copy, the plugin saves it under `.private-qr-sync-conflicts/`.
+- Conflict and deletion backups use Obsidian's cross-platform storage adapter so hidden recovery folders work on macOS and iOS.
 - `.obsidian`, `.trash`, and conflict backups are excluded.
 - Obsidian plugins and settings are intentionally not copied; install Private QR Sync separately on every device.
 - Files over 20 MB are skipped by default.
