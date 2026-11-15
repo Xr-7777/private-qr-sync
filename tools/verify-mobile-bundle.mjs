@@ -12,8 +12,22 @@ let loadDataValue = null;
 let capturedServer;
 const secrets = new Map();
 
+class TFile {
+  constructor(path, data = new ArrayBuffer(0), mtime = Date.now()) {
+    this.path = path;
+    this.data = data.slice(0);
+    this.stat = { size: data.byteLength, mtime, ctime: mtime };
+  }
+}
+
+class TFolder {
+  constructor(path) { this.path = path; }
+}
+
 class Plugin {
   constructor() {
+    const files = new Map();
+    const folders = new Map();
     this.app = {
       secretStorage: {
         getSecret: (name) => secrets.get(name) ?? null,
@@ -21,7 +35,24 @@ class Plugin {
       },
       vault: {
         getName: () => "Mobile Test",
-        getFiles: () => [],
+        getFiles: () => [...files.values()],
+        getAbstractFileByPath: (path) => files.get(path) ?? folders.get(path) ?? null,
+        readBinary: async (file) => file.data.slice(0),
+        createBinary: async (path, data, options = {}) => {
+          const file = new TFile(path, data, options.mtime ?? Date.now());
+          files.set(path, file);
+          return file;
+        },
+        modifyBinary: async (file, data, options = {}) => {
+          file.data = data.slice(0);
+          file.stat = { size: data.byteLength, mtime: options.mtime ?? Date.now(), ctime: file.stat.ctime };
+        },
+        delete: async (file) => { files.delete(file.path); },
+        createFolder: async (path) => {
+          const folder = new TFolder(path);
+          folders.set(path, folder);
+          return folder;
+        },
         on: (name) => {
           vaultEvents.push(name);
           return {};
@@ -53,7 +84,7 @@ const obsidian = {
   Notice,
   Platform: { isDesktopApp: false, isMobile: true, isIosApp: true },
   requestUrl: async () => { throw new Error("not called during load"); },
-  TFile: class TFile {},
+  TFile,
 };
 
 const module = { exports: {} };
@@ -85,7 +116,7 @@ assert.equal(typeof PluginClass, "function", "bundle should export the plugin cl
 const plugin = new PluginClass();
 await plugin.onload();
 assert.equal(typeof protocolHandler, "function", "mobile protocol handler should be registered");
-assert.deepEqual(vaultEvents, ["create", "modify"], "mobile load should watch local file changes");
+assert.deepEqual(vaultEvents, ["create", "modify", "delete", "rename"], "mobile load should watch local file changes and deletes");
 assert.deepEqual([...new Set(calls)], ["obsidian"], "mobile load must not resolve Node modules");
 console.log("Mobile bundle loaded without Node modules.");
 
@@ -135,8 +166,24 @@ const revisionBefore = await plugin.client.getRevision(peer);
 desktopPlugin.server.markChanged();
 const revisionAfter = await plugin.client.getRevision(peer);
 assert.notEqual(revisionAfter, revisionBefore, "desktop changes should advance the encrypted revision token");
+const emptySync = await plugin.client.sync(peer, "Mobile test", 20, []);
+assert.deepEqual(emptySync, {
+  report: { uploaded: 0, downloaded: 0, deleted: 0, conflictsPreserved: 0, skipped: 0 },
+  deletions: [],
+}, "new clients should exchange an encrypted deletion journal");
+const deletion = { path: "deleted.md", deletedAt: Date.now(), deviceName: "Mobile test" };
+await desktopPlugin.app.vault.createBinary("deleted.md", new TextEncoder().encode("recover me").buffer, { mtime: 1 });
+const deletionSync = await plugin.client.sync(peer, "Mobile test", 20, [deletion]);
+assert.equal(desktopPlugin.app.vault.getAbstractFileByPath("deleted.md"), null, "a client deletion should remove the host copy");
+assert.equal(
+  desktopPlugin.app.vault.getFiles().filter((file) => file.path.startsWith(".private-qr-sync-conflicts/")).length,
+  1,
+  "the host copy must be backed up before deletion",
+);
+assert.equal(deletionSync.report.deleted, 1);
+assert.equal(deletionSync.report.conflictsPreserved, 1);
 await desktopPlugin.onunload();
-console.log("Desktop bundle served health and encrypted revision endpoints.");
+console.log("Desktop bundle served health, revision, and deletion-journal endpoints.");
 
 capturedServer = undefined;
 loadDataValue = {

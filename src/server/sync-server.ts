@@ -1,7 +1,9 @@
 import type { IncomingMessage, Server, ServerResponse } from "http";
 import type { App } from "obsidian";
+import { removeDeletion, upsertDeletion, validateDeletionRecord } from "../shared/deletions";
 import { decryptJson, encryptJson, MAX_CLOCK_SKEW_MS, randomHex, randomSecret } from "../shared/encoding";
-import { buildManifest, readFilePayload, writeFilePayload } from "../shared/vault";
+import { isSyncablePath } from "../shared/paths";
+import { applyDeletion, buildManifest, readFilePayload, writeFilePayload } from "../shared/vault";
 import type {
   EncryptedEnvelope,
   FilePayload,
@@ -15,7 +17,9 @@ import { nodeRequire } from "./node-modules";
 
 const NONCE_TTL_MS = 5 * 60 * 1000;
 const SMALL_REQUEST_LIMIT = 64 * 1024;
-const ROUTES = new Set(["/v1/pair", "/v1/revision", "/v1/manifest", "/v1/read", "/v1/write"]);
+const ROUTES = new Set([
+  "/v1/pair", "/v1/revision", "/v1/manifest", "/v1/deletions", "/v1/read", "/v1/write", "/v1/delete", "/v1/restore",
+]);
 
 export interface ServerDependencies {
   app: App;
@@ -124,6 +128,9 @@ export class SyncServer {
       case "/v1/manifest":
         result = await buildManifest(this.dependencies.app, maxBytes);
         break;
+      case "/v1/deletions":
+        result = settings.deletions;
+        break;
       case "/v1/read": {
         const payload = message.payload as { path?: string };
         if (!payload.path) throw new Error("Missing path");
@@ -136,9 +143,37 @@ export class SyncServer {
           return;
         }
         const payload = message.payload as FilePayload;
-        result = {
-          preserved: await writeFilePayload(this.dependencies.app, payload, maxBytes, peer.name),
-        };
+        const preserved = await writeFilePayload(this.dependencies.app, payload, maxBytes, peer.name);
+        settings.deletions = removeDeletion(settings.deletions, payload.path);
+        await this.dependencies.saveSettings();
+        result = { preserved };
+        break;
+      }
+      case "/v1/delete": {
+        if (!settings.allowMobileUploads) {
+          this.sendJson(response, 403, { error: "Client uploads are disabled" });
+          return;
+        }
+        const deletion = validateDeletionRecord(message.payload);
+        const outcome = await applyDeletion(this.dependencies.app, deletion, peer.name);
+        if (outcome.accepted) {
+          settings.deletions = upsertDeletion(settings.deletions, deletion);
+          await this.dependencies.saveSettings();
+          this.markChanged();
+        }
+        result = outcome;
+        break;
+      }
+      case "/v1/restore": {
+        if (!settings.allowMobileUploads) {
+          this.sendJson(response, 403, { error: "Client uploads are disabled" });
+          return;
+        }
+        const payload = message.payload as { path?: string };
+        if (!payload.path || !isSyncablePath(payload.path)) throw new Error("Invalid restore path");
+        settings.deletions = removeDeletion(settings.deletions, payload.path);
+        await this.dependencies.saveSettings();
+        result = { restored: true };
         break;
       }
       default:

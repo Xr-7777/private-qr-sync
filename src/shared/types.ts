@@ -29,6 +29,7 @@ export interface PrivateQrSyncSettings {
   maxFileSizeMb: number;
   syncOnStartup: boolean;
   pairedPeers: PeerRecord[];
+  deletions: DeletionRecord[];
   pendingPairing?: PendingPairing;
   mobilePeer?: MobilePeer;
 }
@@ -40,6 +41,7 @@ export const DEFAULT_SETTINGS: PrivateQrSyncSettings = {
   maxFileSizeMb: 20,
   syncOnStartup: true,
   pairedPeers: [],
+  deletions: [],
 };
 
 export interface PairingInvite {
@@ -83,6 +85,12 @@ export interface FilePayload {
   data: string;
 }
 
+export interface DeletionRecord {
+  path: string;
+  deletedAt: number;
+  deviceName: string;
+}
+
 export interface PairResponse {
   peerId: string;
   peerSecret: string;
@@ -93,7 +101,13 @@ export interface PairResponse {
 export interface SyncReport {
   uploaded: number;
   downloaded: number;
+  deleted: number;
   conflictsPreserved: number;
   skipped: number;
+}
+
+export interface SyncResult {
+  report: SyncReport;
+  deletions: DeletionRecord[];
 }
 

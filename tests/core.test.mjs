@@ -4,6 +4,7 @@ import QRCode from "qrcode";
 import { decryptJson, encryptJson, randomSecret, validateSecureResponse } from "../src/shared/encoding.ts";
 import { inviteFromParams, inviteToUri } from "../src/shared/invite.ts";
 import { getCachedHash } from "../src/shared/manifest-cache.ts";
+import { validateDeletionRecord } from "../src/shared/deletions.ts";
 import { conflictPath, isSyncablePath, validateSyncPath } from "../src/shared/paths.ts";
 import { shouldSyncRevision } from "../src/shared/revision.ts";
 import { planSync } from "../src/shared/sync-plan.ts";
@@ -84,6 +85,28 @@ test("sync plan sends the newer copy in either direction", () => {
   );
   assert.deepEqual(phoneNewer, [{ kind: "upload", path: "note.md", preserveExisting: true }]);
   assert.deepEqual(computerNewer, [{ kind: "download", path: "note.md", preserveExisting: true }]);
+});
+
+test("sync plan propagates deletions but lets a newer file restore the path", () => {
+  const deleted = { path: "note.md", deletedAt: 20, deviceName: "Mac" };
+  assert.deepEqual(
+    planSync([], [{ path: "note.md", size: 1, mtime: 10, hash: "old" }], [deleted], []),
+    [{ kind: "delete-remote", path: "note.md", deletion: deleted }],
+  );
+  assert.deepEqual(
+    planSync([{ path: "note.md", size: 1, mtime: 30, hash: "new" }], [], [deleted], []),
+    [
+      { kind: "clear-local-deletion", path: "note.md" },
+      { kind: "upload", path: "note.md", preserveExisting: false },
+    ],
+  );
+});
+
+test("deletion records reject unsafe paths and implausible timestamps", () => {
+  const record = { path: "notes/old.md", deletedAt: Date.now(), deviceName: "Mac" };
+  assert.deepEqual(validateDeletionRecord(record), record);
+  assert.throws(() => validateDeletionRecord({ ...record, path: ".obsidian/plugins/a/main.js" }));
+  assert.throws(() => validateDeletionRecord({ ...record, deletedAt: Date.now() + 10 * 60 * 1000 }));
 });
 
 test("manifest cache reuses only an unchanged file hash", () => {

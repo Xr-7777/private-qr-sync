@@ -1,4 +1,4 @@
-import { Notice, Platform, Plugin, type TAbstractFile } from "obsidian";
+import { Notice, Platform, Plugin, TFile, type TAbstractFile } from "obsidian";
 import { confirmClientPairing } from "./client-pairing-modal";
 import { SyncClient } from "./client/sync-client";
 import { PairingModal } from "./pairing-modal";
@@ -6,6 +6,7 @@ import { getLanAddresses } from "./server/network";
 import { SyncServer } from "./server/sync-server";
 import { inviteFromParams, inviteToUri } from "./shared/invite";
 import { randomHex, randomSecret } from "./shared/encoding";
+import { removeDeletion, upsertDeletion, validateDeletionRecord } from "./shared/deletions";
 import { isSyncablePath } from "./shared/paths";
 import { shouldSyncRevision } from "./shared/revision";
 import {
@@ -13,6 +14,7 @@ import {
   PLUGIN_ID,
   type PairingInvite,
   type PrivateQrSyncSettings,
+  type DeletionRecord,
 } from "./shared/types";
 import { PrivateQrSyncSettingTab } from "./settings-tab";
 
@@ -29,6 +31,8 @@ export default class PrivateQrSyncPlugin extends Plugin {
   private serverAddress?: string;
   private clientSyncRegistered = false;
   private hostTrackingRegistered = false;
+  private pendingSync = false;
+  private readonly syncDeletionChanges = new Map<string, DeletionRecord | null>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -61,6 +65,11 @@ export default class PrivateQrSyncPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const saved = await this.loadData() as Partial<PrivateQrSyncSettings> | null;
     this.settings = { ...structuredClone(DEFAULT_SETTINGS), ...(saved ?? {}) };
+    this.settings.deletions = Array.isArray(this.settings.deletions)
+      ? this.settings.deletions.flatMap((record) => {
+        try { return [validateDeletionRecord(record)]; } catch { return []; }
+      })
+      : [];
     if (!this.settings.deviceName) {
       this.settings.deviceName = Platform.isDesktopApp ? "Desktop" : "iPhone";
       await this.saveSettings();
@@ -137,13 +146,26 @@ export default class PrivateQrSyncPlugin extends Plugin {
     }
     if (this.syncing) return;
     this.syncing = true;
+    this.syncDeletionChanges.clear();
     const notice = silent ? undefined : new Notice("Private QR Sync is comparing files…", 0);
     try {
       const revision = await this.client.getRevision(peer);
-      const report = await this.client.sync(peer, this.settings.deviceName, this.settings.maxFileSizeMb);
+      const result = await this.client.sync(
+        peer,
+        this.settings.deviceName,
+        this.settings.maxFileSizeMb,
+        this.settings.deletions,
+      );
+      const report = result.report;
+      let deletions = result.deletions;
+      for (const [path, record] of this.syncDeletionChanges) {
+        deletions = record ? upsertDeletion(deletions, record) : removeDeletion(deletions, path);
+      }
+      this.settings.deletions = deletions;
+      await this.saveSettings();
       this.lastDesktopRevision = revision;
       notice?.setMessage(
-        `Sync complete: ${report.downloaded} downloaded, ${report.uploaded} uploaded, ` +
+        `Sync complete: ${report.downloaded} downloaded, ${report.uploaded} uploaded, ${report.deleted} deleted, ` +
         `${report.conflictsPreserved} conflicts preserved, ${report.skipped} skipped.`,
       );
     } catch (error) {
@@ -153,6 +175,10 @@ export default class PrivateQrSyncPlugin extends Plugin {
     } finally {
       if (notice) window.setTimeout(() => notice.hide(), 6000);
       this.syncing = false;
+      if (this.pendingSync) {
+        this.pendingSync = false;
+        this.scheduleAutoSync();
+      }
     }
   }
 
@@ -190,19 +216,44 @@ export default class PrivateQrSyncPlugin extends Plugin {
     if (this.hostTrackingRegistered) return;
     this.hostTrackingRegistered = true;
     const markChanged = (file: TAbstractFile): void => {
-      if (isSyncablePath(file.path)) this.server?.markChanged();
+      if (!isSyncablePath(file.path)) return;
+      void this.clearDeletion(file.path);
+      this.server?.markChanged();
     };
     this.registerEvent(this.app.vault.on("create", markChanged));
     this.registerEvent(this.app.vault.on("modify", markChanged));
-    this.registerEvent(this.app.vault.on("delete", markChanged));
-    this.registerEvent(this.app.vault.on("rename", markChanged));
+    this.registerEvent(this.app.vault.on("delete", (file) => {
+      if (file instanceof TFile) void this.recordDeletion(file.path);
+    }));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      if (!(file instanceof TFile)) return;
+      void this.recordDeletion(oldPath);
+      markChanged(file);
+    }));
   }
 
   private registerClientSync(): void {
     if (this.clientSyncRegistered) return;
     this.clientSyncRegistered = true;
-    this.registerEvent(this.app.vault.on("create", () => this.scheduleAutoSync()));
-    this.registerEvent(this.app.vault.on("modify", () => this.scheduleAutoSync()));
+    const changed = (file: TAbstractFile): void => {
+      if (!isSyncablePath(file.path)) return;
+      void this.clearDeletion(file.path);
+      if (this.syncing) this.pendingSync = true;
+      this.scheduleAutoSync();
+    };
+    this.registerEvent(this.app.vault.on("create", changed));
+    this.registerEvent(this.app.vault.on("modify", changed));
+    this.registerEvent(this.app.vault.on("delete", (file) => {
+      if (!(file instanceof TFile)) return;
+      void this.recordDeletion(file.path);
+      if (this.syncing) this.pendingSync = true;
+      this.scheduleAutoSync();
+    }));
+    this.registerEvent(this.app.vault.on("rename", (file, oldPath) => {
+      if (!(file instanceof TFile)) return;
+      void this.recordDeletion(oldPath);
+      changed(file);
+    }));
     this.registerInterval(window.setInterval(() => {
       void this.pollForDesktopChanges();
     }, DESKTOP_CHANGE_POLL_MS));
@@ -230,6 +281,27 @@ export default class PrivateQrSyncPlugin extends Plugin {
       this.autoSyncTimer = undefined;
       if (this.settings.syncOnStartup) void this.syncNow(true);
     }, AUTO_SYNC_DEBOUNCE_MS);
+  }
+
+  private async recordDeletion(path: string): Promise<void> {
+    if (!isSyncablePath(path)) return;
+    const record: DeletionRecord = {
+      path,
+      deletedAt: Date.now(),
+      deviceName: this.settings.deviceName,
+    };
+    this.settings.deletions = upsertDeletion(this.settings.deletions, record);
+    if (this.syncing) this.syncDeletionChanges.set(path, record);
+    this.server?.markChanged();
+    await this.saveSettings();
+  }
+
+  private async clearDeletion(path: string): Promise<void> {
+    if (this.syncing) this.syncDeletionChanges.set(path, null);
+    const next = removeDeletion(this.settings.deletions, path);
+    if (next.length === this.settings.deletions.length) return;
+    this.settings.deletions = next;
+    await this.saveSettings();
   }
 
   private async pairFromParams(params: Record<string, string>): Promise<boolean> {

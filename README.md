@@ -18,10 +18,10 @@ No note, attachment, account, signalling request, or telemetry is sent to a clou
 - The client poll transfers only an encrypted revision token; a full vault comparison runs only after a change.
 - Repeated checks reuse hashes for unchanged files instead of rereading the entire vault.
 - Before overwriting a changed file, the losing version is copied to `.private-qr-sync-conflicts/`.
+- Deletes sync in both directions. Before removing the other copy, the plugin saves it under `.private-qr-sync-conflicts/`.
 - `.obsidian`, `.trash`, and conflict backups are excluded.
+- Obsidian plugins and settings are intentionally not copied; install Private QR Sync separately on every device.
 - Files over 20 MB are skipped by default.
-
-`shortcut: deletions are not propagated in the MVP; add authenticated tombstones and a recovery UI before enabling deletes.`
 
 The iPhone must have Obsidian open for sync. iOS suspends community plugins in the background.
 

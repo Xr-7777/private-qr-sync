@@ -2,7 +2,7 @@ import { App, TFile } from "obsidian";
 import { base64ToBytes, bytesToBase64, hashBytes } from "./encoding";
 import { getCachedHash, type CachedFileHash } from "./manifest-cache";
 import { conflictPath, isSyncablePath, validateSyncPath } from "./paths";
-import type { FileEntry, FilePayload } from "./types";
+import type { DeletionRecord, FileEntry, FilePayload } from "./types";
 
 const manifestCaches = new WeakMap<App, Map<string, CachedFileHash>>();
 
@@ -68,6 +68,27 @@ export async function writeFilePayload(
     await app.vault.createBinary(path, bytes.buffer as ArrayBuffer, { mtime: payload.mtime });
   }
   return preserved;
+}
+
+export async function applyDeletion(
+  app: App,
+  record: DeletionRecord,
+  backupDeviceName: string,
+): Promise<{ accepted: boolean; deleted: boolean; preserved: boolean }> {
+  const path = validateSyncPath(record.path);
+  if (!isSyncablePath(path) || !Number.isFinite(record.deletedAt) || record.deletedAt <= 0) {
+    throw new Error("Invalid deletion record");
+  }
+  const existing = app.vault.getAbstractFileByPath(path);
+  if (!existing) return { accepted: true, deleted: false, preserved: false };
+  if (!(existing instanceof TFile)) throw new Error(`A folder exists at ${path}`);
+  if (existing.stat.mtime > record.deletedAt) return { accepted: false, deleted: false, preserved: false };
+
+  const backup = conflictPath(path, `${backupDeviceName}-deleted`);
+  await ensureParentFolders(app, backup);
+  await app.vault.createBinary(backup, await app.vault.readBinary(existing));
+  await app.vault.delete(existing);
+  return { accepted: true, deleted: true, preserved: true };
 }
 
 async function ensureParentFolders(app: App, path: string): Promise<void> {
