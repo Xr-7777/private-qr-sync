@@ -8,7 +8,7 @@ export class PairingModal extends Modal {
   }
 
   onOpen(): void {
-    this.setTitle("Pair an iPhone or iPad");
+    this.setTitle("Pair another device");
     const loading = this.contentEl.createEl("p", { text: "Generating a private pairing code…" });
     void this.renderPairing(loading);
   }
@@ -23,7 +23,7 @@ export class PairingModal extends Modal {
       });
       image.src = await QRCode.toDataURL(uri, { width: 360, margin: 4, errorCorrectionLevel: "M" });
       this.contentEl.createEl("p", {
-        text: `On the iPhone, install and enable Private QR Sync, then scan this with the system Camera. Expires ${new Date(invite.expiresAt).toLocaleTimeString()}.`,
+        text: `On iPhone or iPad, scan this with the system Camera. On Mac or Windows, copy the pairing link and paste it into Private QR Sync settings. Expires ${new Date(invite.expiresAt).toLocaleTimeString()}.`,
       });
       this.contentEl.createEl("p", { text: `Computer address: ${invite.baseUrl}` });
       this.contentEl.createEl("p", {

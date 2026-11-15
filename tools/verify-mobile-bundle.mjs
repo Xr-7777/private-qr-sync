@@ -138,3 +138,14 @@ assert.notEqual(revisionAfter, revisionBefore, "desktop changes should advance t
 await desktopPlugin.onunload();
 console.log("Desktop bundle served health and encrypted revision endpoints.");
 
+capturedServer = undefined;
+loadDataValue = {
+  deviceName: "Mac client test",
+  mobilePeer: peer,
+};
+const desktopClientPlugin = new PluginClass();
+await desktopClientPlugin.onload();
+assert.equal(capturedServer, undefined, "a paired desktop client must not start a second sync server");
+await desktopClientPlugin.onunload();
+console.log("Desktop client loaded without starting a host server.");
+

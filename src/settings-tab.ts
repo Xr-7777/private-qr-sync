@@ -20,8 +20,8 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
         }));
 
-    if (Platform.isDesktopApp) this.renderDesktop();
-    else this.renderMobile();
+    if (Platform.isDesktopApp && !this.plugin.settings.mobilePeer) this.renderDesktop();
+    else this.renderClient();
   }
 
   private renderDesktop(): void {
@@ -39,8 +39,8 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
           }
         }));
     new Setting(this.containerEl)
-      .setName("Allow uploads from mobile")
-      .setDesc("Turn this off to make the phone read-only.")
+      .setName("Allow uploads from paired devices")
+      .setDesc("Turn this off to make paired clients read-only.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.allowMobileUploads)
         .onChange(async (value) => {
@@ -60,8 +60,8 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
           }
         }));
     new Setting(this.containerEl)
-      .setName("Pair a mobile device")
-      .setDesc("Creates a ten-minute, single-use encrypted QR invitation.")
+      .setName("Pair another device")
+      .setDesc("Creates a ten-minute, single-use encrypted QR or link invitation.")
       .addButton((button) => button.setCta().setButtonText("Show QR code").onClick(() => this.plugin.showPairingModal()))
       .addButton((button) => button.setButtonText("Restart service").onClick(async () => {
         await this.plugin.restartServer();
@@ -69,7 +69,7 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
 
     new Setting(this.containerEl).setName("Paired devices").setHeading();
     if (this.plugin.settings.pairedPeers.length === 0) {
-      this.containerEl.createEl("p", { text: "No mobile devices are paired." });
+      this.containerEl.createEl("p", { text: "No client devices are paired." });
     }
     for (const peer of this.plugin.settings.pairedPeers) {
       new Setting(this.containerEl)
@@ -80,13 +80,30 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
           this.display();
         }));
     }
+
+    new Setting(this.containerEl).setName("Use this computer as a client").setHeading();
+    let pairingLink = "";
+    new Setting(this.containerEl)
+      .setName("Pairing link from the host computer")
+      .setDesc("On the host, choose Show QR code → Copy pairing link, then paste it here.")
+      .addText((text) => text
+        .setPlaceholder("obsidian://private-qr-sync?…")
+        .onChange((value) => {
+          pairingLink = value.trim();
+        }))
+      .addButton((button) => button.setCta().setButtonText("Pair and sync").onClick(async () => {
+        button.setDisabled(true);
+        const paired = await this.plugin.pairFromLink(pairingLink);
+        button.setDisabled(false);
+        if (paired) this.display();
+      }));
   }
 
-  private renderMobile(): void {
-    new Setting(this.containerEl).setName("Paired computer").setHeading();
+  private renderClient(): void {
+    new Setting(this.containerEl).setName("Paired host computer").setHeading();
     const peer = this.plugin.settings.mobilePeer;
     if (!peer) {
-      this.containerEl.createEl("p", { text: "Not paired. Scan the QR code shown by the desktop plugin with the iPhone Camera." });
+      this.containerEl.createEl("p", { text: "Not paired. Scan the host QR code or paste its pairing link on a desktop." });
       return;
     }
     new Setting(this.containerEl)
@@ -99,7 +116,9 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
       }));
     new Setting(this.containerEl)
       .setName("Automatic two-way sync")
-      .setDesc("Uploads phone edits after they change and detects computer edits within about two seconds while Obsidian is open. iOS pauses plugins in the background.")
+      .setDesc(Platform.isDesktopApp
+        ? "Uploads this computer's edits and detects host edits within about two seconds while Obsidian is open."
+        : "Uploads phone edits and detects host edits within about two seconds while Obsidian is open. iOS pauses plugins in the background.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.syncOnStartup)
         .onChange(async (value) => {

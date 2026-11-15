@@ -1,6 +1,6 @@
 import { Notice, Platform, Plugin, type TAbstractFile } from "obsidian";
+import { confirmClientPairing } from "./client-pairing-modal";
 import { SyncClient } from "./client/sync-client";
-import { confirmMobilePairing } from "./mobile-pairing-modal";
 import { PairingModal } from "./pairing-modal";
 import { getLanAddresses } from "./server/network";
 import { SyncServer } from "./server/sync-server";
@@ -27,6 +27,8 @@ export default class PrivateQrSyncPlugin extends Plugin {
   private autoSyncTimer?: number;
   private lastDesktopRevision?: string;
   private serverAddress?: string;
+  private clientSyncRegistered = false;
+  private hostTrackingRegistered = false;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -35,28 +37,20 @@ export default class PrivateQrSyncPlugin extends Plugin {
     this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.syncNow() });
     this.addCommand({
       id: "show-pairing-qr",
-      name: "Show mobile pairing QR code",
+      name: "Show device pairing QR code",
       checkCallback: (checking) => {
-        if (!Platform.isDesktopApp) return false;
+        if (!Platform.isDesktopApp || this.settings.mobilePeer) return false;
         if (!checking) this.showPairingModal();
         return true;
       },
     });
-    this.registerObsidianProtocolHandler(PLUGIN_ID, (params) => void this.handlePairingLink(params));
+    this.registerObsidianProtocolHandler(PLUGIN_ID, (params) => void this.pairFromParams(params));
 
-    if (Platform.isDesktopApp) {
+    if (Platform.isDesktopApp && !this.settings.mobilePeer) {
       await this.restartServer();
       this.registerDesktopChangeTracking();
     } else {
-      this.registerEvent(this.app.vault.on("create", () => this.scheduleAutoSync()));
-      this.registerEvent(this.app.vault.on("modify", () => this.scheduleAutoSync()));
-      this.registerInterval(window.setInterval(() => {
-        void this.pollForDesktopChanges();
-      }, DESKTOP_CHANGE_POLL_MS));
-      this.register(() => {
-        if (this.autoSyncTimer !== undefined) window.clearTimeout(this.autoSyncTimer);
-      });
-      if (this.settings.syncOnStartup && this.settings.mobilePeer) this.scheduleAutoSync();
+      this.registerClientSync();
     }
   }
 
@@ -78,7 +72,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
   }
 
   async restartServer(): Promise<void> {
-    if (!Platform.isDesktopApp) return;
+    if (!Platform.isDesktopApp || this.settings.mobilePeer) return;
     await this.server?.stop();
     this.serverAddress = undefined;
     const address = getLanAddresses()[0];
@@ -106,8 +100,8 @@ export default class PrivateQrSyncPlugin extends Plugin {
   }
 
   showPairingModal(): void {
-    if (!Platform.isDesktopApp) {
-      new Notice("Pairing QR codes are created on the computer");
+    if (!Platform.isDesktopApp || this.settings.mobilePeer) {
+      new Notice("Pairing invitations are created on a host computer");
       return;
     }
     new PairingModal(this).open();
@@ -136,16 +130,12 @@ export default class PrivateQrSyncPlugin extends Plugin {
   }
 
   async syncNow(silent = false): Promise<void> {
-    if (Platform.isDesktopApp) {
-      new Notice("Open Private QR Sync on the iPhone to start a sync");
+    const peer = this.settings.mobilePeer;
+    if (!peer) {
+      new Notice(Platform.isDesktopApp ? "This computer is the sync host" : "Scan a pairing QR code from the host computer first");
       return;
     }
     if (this.syncing) return;
-    const peer = this.settings.mobilePeer;
-    if (!peer) {
-      new Notice("Scan a pairing QR code from the computer first");
-      return;
-    }
     this.syncing = true;
     const notice = silent ? undefined : new Notice("Private QR Sync is comparing files…", 0);
     try {
@@ -179,9 +169,26 @@ export default class PrivateQrSyncPlugin extends Plugin {
     this.settings.mobilePeer = undefined;
     this.lastDesktopRevision = undefined;
     await this.saveSettings();
+    if (Platform.isDesktopApp) {
+      await this.restartServer();
+      this.registerDesktopChangeTracking();
+    }
+  }
+
+  async pairFromLink(link: string): Promise<boolean> {
+    try {
+      const url = new URL(link.trim());
+      if (url.protocol !== "obsidian:" || url.hostname !== PLUGIN_ID) throw new Error("This is not a Private QR Sync pairing link");
+      return await this.pairFromParams(Object.fromEntries(url.searchParams.entries()));
+    } catch (error) {
+      new Notice(`Pairing failed: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
+    }
   }
 
   private registerDesktopChangeTracking(): void {
+    if (this.hostTrackingRegistered) return;
+    this.hostTrackingRegistered = true;
     const markChanged = (file: TAbstractFile): void => {
       if (isSyncablePath(file.path)) this.server?.markChanged();
     };
@@ -191,6 +198,20 @@ export default class PrivateQrSyncPlugin extends Plugin {
     this.registerEvent(this.app.vault.on("rename", markChanged));
   }
 
+  private registerClientSync(): void {
+    if (this.clientSyncRegistered) return;
+    this.clientSyncRegistered = true;
+    this.registerEvent(this.app.vault.on("create", () => this.scheduleAutoSync()));
+    this.registerEvent(this.app.vault.on("modify", () => this.scheduleAutoSync()));
+    this.registerInterval(window.setInterval(() => {
+      void this.pollForDesktopChanges();
+    }, DESKTOP_CHANGE_POLL_MS));
+    this.register(() => {
+      if (this.autoSyncTimer !== undefined) window.clearTimeout(this.autoSyncTimer);
+    });
+    if (this.settings.syncOnStartup && this.settings.mobilePeer) this.scheduleAutoSync();
+  }
+
   private async pollForDesktopChanges(): Promise<void> {
     const peer = this.settings.mobilePeer;
     if (!this.settings.syncOnStartup || !peer || this.syncing) return;
@@ -198,7 +219,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
       const revision = await this.client.getRevision(peer);
       if (shouldSyncRevision(this.lastDesktopRevision, revision)) await this.syncNow(true);
     } catch {
-      // The computer being asleep or off-network is expected during mobile use.
+      // The host being asleep or off-network is expected during client use.
     }
   }
 
@@ -211,28 +232,32 @@ export default class PrivateQrSyncPlugin extends Plugin {
     }, AUTO_SYNC_DEBOUNCE_MS);
   }
 
-  private async handlePairingLink(params: Record<string, string>): Promise<void> {
-    if (Platform.isDesktopApp) {
-      new Notice("Scan this link on the mobile device, not the computer");
-      return;
-    }
+  private async pairFromParams(params: Record<string, string>): Promise<boolean> {
     try {
       const invite = inviteFromParams(params);
       if (invite.vaultId !== this.app.vault.getName()) {
-        throw new Error(`This QR code is for the “${invite.vaultId}” vault. Open or create a mobile vault with the same name first.`);
+        throw new Error(`This invitation is for the “${invite.vaultId}” vault. Open or create a vault with the same name first.`);
       }
-      if (!await confirmMobilePairing(this.app, invite)) {
+      if (!await confirmClientPairing(this.app, invite)) {
         new Notice("Pairing cancelled");
-        return;
+        return false;
       }
       const peer = await this.client.pair(invite, this.settings.deviceName);
+      if (Platform.isDesktopApp) {
+        await this.server?.stop();
+        this.server = undefined;
+        this.serverAddress = undefined;
+      }
       this.settings.mobilePeer = peer;
       this.lastDesktopRevision = undefined;
       await this.saveSettings();
+      this.registerClientSync();
       new Notice(`Paired with ${peer.name}. Starting the first sync…`);
       await this.syncNow();
+      return true;
     } catch (error) {
       new Notice(`Pairing failed: ${error instanceof Error ? error.message : String(error)}`);
+      return false;
     }
   }
 }
