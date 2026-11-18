@@ -11,9 +11,9 @@
 
 Private QR Sync connects Obsidian vaults directly across **Windows, macOS, iPhone, and iPad** on the same trusted LAN. Pair a device with a short-lived QR code, choose exactly which notes or folders may move, and keep every device under an independent sync policy.
 
-Your notes do not pass through the author's server. Requests and file bodies are encrypted between paired devices with **AES-256-GCM**. GitHub is used only to distribute the plugin during beta.
+Your notes do not pass through the author's server. Requests and file bodies are encrypted between paired devices with **AES-256-GCM**. GitHub hosts the public source code and release assets; it never receives your vault data.
 
-> **Public beta:** install with BRAT and start with a backup or test vault. The plugin is not yet listed in the official Obsidian Community Plugins directory.
+> **Available in the official directory:** install from Obsidian's Community Plugins browser. Start with a backup or test vault while the plugin remains in public beta.
 
 ## Why Private QR Sync?
 
@@ -52,20 +52,14 @@ flowchart LR
 
 One computer stays open as the host. Every paired client receives its own revocable key and policy. A client compares SHA-256 manifests and transfers only changed files. The host does not upload your vault to GitHub or any third-party relay.
 
-## Quick start with BRAT
+## Quick start
 
 1. Create or open an Obsidian vault with the **same vault name** on every device.
-2. Install and enable [BRAT](https://obsidian.md/plugins?id=obsidian42-brat) on each device.
-3. In BRAT, choose **Add Beta plugin** and enter:
-
-   ```text
-   https://github.com/Xr-7777/private-qr-sync
-   ```
-
-4. Enable **Private QR Sync** under Obsidian → Settings → Community plugins.
-5. On the computer that will act as host, open Private QR Sync settings and choose **Show QR code**.
-6. On iPhone/iPad, scan with the system Camera and open the link in Obsidian. On another computer, copy the pairing link and paste it under **Use this computer as a client**.
-7. Back on the host, configure that device's direction, selected paths, deletion policy, and transfer permission.
+2. Open Obsidian → Settings → Community plugins → Browse, search for **Private QR Sync**, then choose **Install** and **Enable**.
+3. Repeat the installation on every device that will participate.
+4. On the computer that will act as host, open Private QR Sync settings and choose **Show QR code**.
+5. On iPhone/iPad, scan with the system Camera and open the link in Obsidian. On another computer, copy the pairing link and paste it under **Use this computer as a client**.
+6. Back on the host, configure that device's direction, selected paths, deletion policy, and transfer permission.
 
 Allow Obsidian through the firewall only on **Private networks**. Keep the host awake and Obsidian open while syncing.
 
