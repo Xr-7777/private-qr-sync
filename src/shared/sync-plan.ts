@@ -1,4 +1,4 @@
-import type { DeletionRecord, FileEntry } from "./types";
+import type { DeletionRecord, FileEntry, SyncMode } from "./types";
 
 export interface FileSyncAction {
   kind: "upload" | "download";
@@ -24,17 +24,41 @@ export function planSync(
   remoteFiles: FileEntry[],
   localDeletions: DeletionRecord[] = [],
   remoteDeletions: DeletionRecord[] = [],
+  mode: SyncMode = "two-way",
+  syncDeletes = true,
 ): SyncAction[] {
   const local = new Map(localFiles.map((file) => [file.path, file]));
   const remote = new Map(remoteFiles.map((file) => [file.path, file]));
-  const localDeleted = latestDeletions(localDeletions);
-  const remoteDeleted = latestDeletions(remoteDeletions);
+  const localDeleted = latestDeletions(syncDeletes ? localDeletions : []);
+  const remoteDeleted = latestDeletions(syncDeletes ? remoteDeletions : []);
   const paths = [...new Set([...local.keys(), ...remote.keys(), ...localDeleted.keys(), ...remoteDeleted.keys()])].sort();
   const actions: SyncAction[] = [];
 
   for (const path of paths) {
     const localFile = local.get(path);
     const remoteFile = remote.get(path);
+    if (mode === "host-to-client") {
+      const sourceDeletion = remoteDeleted.get(path);
+      if (sourceDeletion && (!remoteFile || sourceDeletion.deletedAt >= remoteFile.mtime)) {
+        if (localFile) actions.push({ kind: "delete-local", path, deletion: sourceDeletion });
+        continue;
+      }
+      if (remoteFile && (!localFile || localFile.hash !== remoteFile.hash)) {
+        actions.push({ kind: "download", path, preserveExisting: Boolean(localFile) });
+      }
+      continue;
+    }
+    if (mode === "client-to-host") {
+      const sourceDeletion = localDeleted.get(path);
+      if (sourceDeletion && (!localFile || sourceDeletion.deletedAt >= localFile.mtime)) {
+        if (remoteFile) actions.push({ kind: "delete-remote", path, deletion: sourceDeletion });
+        continue;
+      }
+      if (localFile && (!remoteFile || localFile.hash !== remoteFile.hash)) {
+        actions.push({ kind: "upload", path, preserveExisting: Boolean(remoteFile) });
+      }
+      continue;
+    }
     const localDeletion = localDeleted.get(path);
     const remoteDeletion = remoteDeleted.get(path);
     const deletion = !localDeletion || (remoteDeletion && remoteDeletion.deletedAt > localDeletion.deletedAt)

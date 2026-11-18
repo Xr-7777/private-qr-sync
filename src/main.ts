@@ -8,6 +8,7 @@ import { inviteFromParams, inviteToUri } from "./shared/invite";
 import { randomHex, randomSecret } from "./shared/encoding";
 import { removeDeletion, upsertDeletion, validateDeletionRecord } from "./shared/deletions";
 import { isSyncablePath } from "./shared/paths";
+import { normalizePolicy, normalizeScopes } from "./shared/policy";
 import { shouldSyncRevision } from "./shared/revision";
 import {
   DEFAULT_SETTINGS,
@@ -15,6 +16,7 @@ import {
   type PairingInvite,
   type PrivateQrSyncSettings,
   type DeletionRecord,
+  type TransferReport,
 } from "./shared/types";
 import { PrivateQrSyncSettingTab } from "./settings-tab";
 
@@ -70,10 +72,21 @@ export default class PrivateQrSyncPlugin extends Plugin {
         try { return [validateDeletionRecord(record)]; } catch { return []; }
       })
       : [];
+    this.settings.transferPaths = Array.isArray(this.settings.transferPaths)
+      ? normalizeScopes(this.settings.transferPaths)
+      : [];
+    this.settings.pairedPeers = this.settings.pairedPeers.map((peer) => ({ ...peer, policy: normalizePolicy(peer) }));
+    let settingsChanged = false;
+    if (this.settings.mobilePeer && !this.app.secretStorage.getSecret(this.settings.mobilePeer.secretName)) {
+      this.settings.mobilePeer = undefined;
+      settingsChanged = true;
+      new Notice("The old pairing key was missing, so the invalid pairing was cleared. Scan a new QR code.");
+    }
     if (!this.settings.deviceName) {
       this.settings.deviceName = Platform.isDesktopApp ? "Desktop" : "iPhone";
-      await this.saveSettings();
+      settingsChanged = true;
     }
+    if (settingsChanged) await this.saveSettings();
   }
 
   async saveSettings(): Promise<void> {
@@ -158,6 +171,10 @@ export default class PrivateQrSyncPlugin extends Plugin {
         this.settings.deletions,
       );
       const report = result.report;
+      if (!result.policy.enabled) {
+        notice?.setMessage("Sync is paused for this device on the host computer.");
+        return;
+      }
       let deletions = result.deletions;
       for (const [path, record] of this.syncDeletionChanges) {
         deletions = record ? upsertDeletion(deletions, record) : removeDeletion(deletions, path);
@@ -168,7 +185,9 @@ export default class PrivateQrSyncPlugin extends Plugin {
       notice?.setMessage(
         `Sync complete: ${report.downloaded} downloaded, ${report.uploaded} uploaded, ${report.deleted} deleted, ` +
         `${report.conflictsPreserved} conflicts preserved, ${report.skipped} skipped.` +
-        (report.failures[0] ? ` First failure: ${report.failures[0].path} — ${report.failures[0].reason}` : ""),
+        (report.failures[0]
+          ? ` First failure: ${report.failures[0].action} ${report.failures[0].path} — ${report.failures[0].reason}`
+          : ""),
       );
       if (report.failures.length > 0) noticeDuration = 15000;
     } catch (error) {
@@ -182,6 +201,33 @@ export default class PrivateQrSyncPlugin extends Plugin {
         this.pendingSync = false;
         this.scheduleAutoSync();
       }
+    }
+  }
+
+  async transfer(direction: "from-host" | "to-host"): Promise<void> {
+    const peer = this.settings.mobilePeer;
+    if (!peer) {
+      new Notice("Pair this device with a host computer first");
+      return;
+    }
+    let paths: string[];
+    try {
+      paths = normalizeScopes(this.settings.transferPaths);
+      if (paths.length === 0) throw new Error("Choose at least one note or folder");
+    } catch (error) {
+      new Notice(`Transfer cannot start: ${error instanceof Error ? error.message : String(error)}`);
+      return;
+    }
+    const notice = new Notice("Private QR Sync is transferring selected files…", 0);
+    try {
+      const report = direction === "from-host"
+        ? await this.client.transferFromHost(peer, this.settings.deviceName, this.settings.maxFileSizeMb, paths)
+        : await this.client.transferToHost(peer, this.settings.maxFileSizeMb, paths);
+      notice.setMessage(transferReportMessage(report));
+    } catch (error) {
+      notice.setMessage(`Transfer failed: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      window.setTimeout(() => notice.hide(), 15000);
     }
   }
 
@@ -335,5 +381,11 @@ export default class PrivateQrSyncPlugin extends Plugin {
       return false;
     }
   }
+}
+
+function transferReportMessage(report: TransferReport): string {
+  return `Transfer complete: ${report.copied} copied, ${report.duplicates} kept as copies, ` +
+    `${report.unchanged} unchanged, ${report.skipped} skipped.` +
+    (report.failures[0] ? ` First failure: ${report.failures[0].path} — ${report.failures[0].reason}` : "");
 }
 

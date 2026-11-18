@@ -2,16 +2,17 @@ import { App, TFile } from "obsidian";
 import { base64ToBytes, bytesToBase64, hashBytes } from "./encoding";
 import { getCachedHash, type CachedFileHash } from "./manifest-cache";
 import { conflictPath, isSyncablePath, validateSyncPath } from "./paths";
-import type { DeletionRecord, FileEntry, FilePayload } from "./types";
+import type { DeletionRecord, FileEntry, FilePayload, TransferWriteResult } from "./types";
+import { isPathSelected } from "./policy";
 
 const manifestCaches = new WeakMap<App, Map<string, CachedFileHash>>();
 
-export async function buildManifest(app: App, maxFileSizeBytes: number): Promise<FileEntry[]> {
+export async function buildManifest(app: App, maxFileSizeBytes: number, scopes: string[] = []): Promise<FileEntry[]> {
   const result: FileEntry[] = [];
   const previous = manifestCaches.get(app) ?? new Map<string, CachedFileHash>();
   const next = new Map<string, CachedFileHash>();
   for (const file of app.vault.getFiles()) {
-    if (!isSyncablePath(file.path) || file.stat.size > maxFileSizeBytes) continue;
+    if (!isPathSelected(file.path, scopes) || file.stat.size > maxFileSizeBytes) continue;
     const hash = getCachedHash(previous.get(file.path), file.stat.size, file.stat.mtime, file.stat.ctime) ??
       await hashFile(app, file);
     next.set(file.path, { size: file.stat.size, mtime: file.stat.mtime, ctime: file.stat.ctime, hash });
@@ -89,6 +90,32 @@ export async function applyDeletion(
   return { accepted: true, deleted: true, preserved: true };
 }
 
+export async function writeTransferredFile(
+  app: App,
+  payload: FilePayload,
+  maxFileSizeBytes: number,
+  sourceName: string,
+): Promise<TransferWriteResult> {
+  const path = validateSyncPath(payload.path);
+  if (!isSyncablePath(path)) throw new Error("This path is excluded from transfer");
+  const bytes = base64ToBytes(payload.data);
+  if (bytes.byteLength > maxFileSizeBytes) throw new Error(`File is larger than the configured limit: ${path}`);
+  const existing = app.vault.getAbstractFileByPath(path);
+  if (existing && !(existing instanceof TFile)) throw new Error(`A folder already exists at ${path}`);
+  if (!existing) {
+    await ensureParentFolders(app, path);
+    await app.vault.createBinary(path, bytes.buffer as ArrayBuffer, { mtime: payload.mtime });
+    return { path, duplicated: false, unchanged: false };
+  }
+  if (await hashBytes(await app.vault.readBinary(existing)) === await hashBytes(bytes.buffer as ArrayBuffer)) {
+    return { path, duplicated: false, unchanged: true };
+  }
+  const copyPath = await uniqueTransferPath(app, path, sourceName);
+  await ensureParentFolders(app, copyPath);
+  await app.vault.createBinary(copyPath, bytes.buffer as ArrayBuffer, { mtime: payload.mtime });
+  return { path: copyPath, duplicated: true, unchanged: false };
+}
+
 async function ensureParentFolders(app: App, path: string): Promise<void> {
   const parts = path.split("/");
   parts.pop();
@@ -110,5 +137,20 @@ async function writeConflictBackup(app: App, path: string, data: ArrayBuffer): P
   let destination = path;
   for (let suffix = 2; await app.vault.adapter.exists(destination); suffix += 1) destination = `${path}.${suffix}`;
   await app.vault.adapter.writeBinary(destination, data);
+}
+
+async function uniqueTransferPath(app: App, path: string, sourceName: string): Promise<string> {
+  const slash = path.lastIndexOf("/");
+  const folder = slash >= 0 ? path.slice(0, slash + 1) : "";
+  const name = slash >= 0 ? path.slice(slash + 1) : path;
+  const dot = name.lastIndexOf(".");
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const extension = dot > 0 ? name.slice(dot) : "";
+  const safeSource = sourceName.replace(/[^a-zA-Z0-9\u4e00-\u9fff_-]+/gu, "-").replace(/^-+|-+$/gu, "") || "device";
+  const stamp = new Date().toISOString().replace(/[-:TZ.]/gu, "").slice(0, 14);
+  const base = `${folder}${stem} (from ${safeSource} ${stamp})`;
+  let candidate = `${base}${extension}`;
+  for (let suffix = 2; app.vault.getAbstractFileByPath(candidate); suffix += 1) candidate = `${base} ${suffix}${extension}`;
+  return candidate;
 }
 

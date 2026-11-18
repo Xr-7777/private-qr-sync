@@ -1,6 +1,7 @@
 import { App, requestUrl } from "obsidian";
 import { removeDeletion, upsertDeletion, validateDeletionRecord } from "../shared/deletions";
 import { createSecureMessage, decryptJson, encryptJson, validateSecureResponse } from "../shared/encoding";
+import { DEFAULT_PEER_POLICY, isPathSelected, normalizeScopes } from "../shared/policy";
 import { planSync } from "../shared/sync-plan";
 import type {
   EncryptedEnvelope,
@@ -10,11 +11,14 @@ import type {
   MobilePeer,
   PairingInvite,
   PairResponse,
+  PeerPolicy,
   SecureResponse,
   SyncReport,
   SyncResult,
+  TransferReport,
+  TransferWriteResult,
 } from "../shared/types";
-import { applyDeletion, buildManifest, readFilePayload, writeFilePayload } from "../shared/vault";
+import { applyDeletion, buildManifest, readFilePayload, writeFilePayload, writeTransferredFile } from "../shared/vault";
 
 export class SyncClient {
   constructor(private readonly app: App) {}
@@ -29,6 +33,9 @@ export class SyncClient {
     );
     const secretName = `private-qr-sync-peer-${result.peerId}`;
     this.app.secretStorage.setSecret(secretName, result.peerSecret);
+    if (this.app.secretStorage.getSecret(secretName) !== result.peerSecret) {
+      throw new Error("This device could not save the pairing secret. Reopen Obsidian and pair again.");
+    }
     return {
       id: result.peerId,
       name: result.desktopName,
@@ -60,21 +67,28 @@ export class SyncClient {
   ): Promise<SyncResult> {
     const secret = this.app.secretStorage.getSecret(peer.secretName);
     if (!secret) throw new Error("The pairing secret is missing. Scan a new QR code.");
+    const policy = await this.readPolicy(peer, secret);
+    if (!policy.enabled) {
+      return { report: emptySyncReport(), deletions: localDeletions, policy };
+    }
     const maxBytes = maxFileSizeMb * 1024 * 1024;
     const [remoteFiles, localFiles, deletionState] = await Promise.all([
       this.post<FileEntry[]>(peer.baseUrl, "/v1/manifest", peer.id, secret, {}),
-      buildManifest(this.app, maxBytes),
-      this.readRemoteDeletions(peer, secret),
+      buildManifest(this.app, maxBytes, policy.paths),
+      policy.syncDeletes ? this.readRemoteDeletions(peer, secret) : Promise.resolve({ supported: true, records: [] }),
     ]);
-    const actions = planSync(localFiles, remoteFiles, localDeletions, deletionState.records);
-    const report: SyncReport = {
-      uploaded: 0,
-      downloaded: 0,
-      deleted: 0,
-      conflictsPreserved: 0,
-      skipped: 0,
-      failures: [],
-    };
+    const scopedDeletions = policy.syncDeletes
+      ? localDeletions.filter((item) => item.deletedAt >= policy.deleteEnabledAt && isPathSelected(item.path, policy.paths))
+      : [];
+    const actions = planSync(
+      localFiles,
+      remoteFiles,
+      scopedDeletions,
+      deletionState.records,
+      policy.mode,
+      policy.syncDeletes,
+    );
+    const report = emptySyncReport();
     let deletions = localDeletions;
 
     for (const action of actions) {
@@ -83,7 +97,7 @@ export class SyncClient {
           const outcome = await applyDeletion(this.app, action.deletion, peer.name);
           if (!outcome.accepted) {
             report.skipped += 1;
-            report.failures.push({ path: action.path, reason: "A newer copy appeared during sync" });
+            report.failures.push({ action: action.kind, path: action.path, reason: "A newer copy appeared during sync" });
             continue;
           }
           deletions = upsertDeletion(deletions, action.deletion);
@@ -96,7 +110,7 @@ export class SyncClient {
           );
           if (!outcome.accepted) {
             report.skipped += 1;
-            report.failures.push({ path: action.path, reason: "A newer copy appeared during sync" });
+            report.failures.push({ action: action.kind, path: action.path, reason: "A newer copy appeared during sync" });
             continue;
           }
           deletions = upsertDeletion(deletions, action.deletion);
@@ -123,10 +137,71 @@ export class SyncClient {
       } catch (error) {
         console.error(`[private-qr-sync] failed to sync ${action.path}`, error);
         report.skipped += 1;
-        report.failures.push({ path: action.path, reason: error instanceof Error ? error.message : String(error) });
+        report.failures.push({
+          action: action.kind,
+          path: action.path,
+          reason: error instanceof Error ? error.message : String(error),
+        });
       }
     }
-    return { report, deletions };
+    return { report, deletions, policy };
+  }
+
+  async transferFromHost(
+    peer: MobilePeer,
+    deviceName: string,
+    maxFileSizeMb: number,
+    requestedPaths: string[],
+  ): Promise<TransferReport> {
+    const secret = this.requireSecret(peer);
+    const scopes = requireTransferScopes(requestedPaths);
+    const maxBytes = maxFileSizeMb * 1024 * 1024;
+    const manifest = await this.post<FileEntry[]>(peer.baseUrl, "/v1/transfer-manifest", peer.id, secret, {});
+    const report = emptyTransferReport();
+    for (const file of manifest.filter((item) => isPathSelected(item.path, scopes))) {
+      try {
+        const payload = await this.post<FilePayload>(peer.baseUrl, "/v1/transfer-read", peer.id, secret, { path: file.path });
+        const result = await writeTransferredFile(this.app, payload, maxBytes, peer.name || deviceName);
+        countTransferResult(report, result);
+      } catch (error) {
+        addTransferFailure(report, file.path, error);
+      }
+    }
+    return report;
+  }
+
+  async transferToHost(peer: MobilePeer, maxFileSizeMb: number, requestedPaths: string[]): Promise<TransferReport> {
+    const secret = this.requireSecret(peer);
+    const scopes = requireTransferScopes(requestedPaths);
+    const maxBytes = maxFileSizeMb * 1024 * 1024;
+    const report = emptyTransferReport();
+    for (const file of await buildManifest(this.app, maxBytes, scopes)) {
+      try {
+        const payload = await readFilePayload(this.app, file.path, maxBytes);
+        const result = await this.post<TransferWriteResult>(
+          peer.baseUrl, "/v1/transfer-write", peer.id, secret, payload,
+        );
+        countTransferResult(report, result);
+      } catch (error) {
+        addTransferFailure(report, file.path, error);
+      }
+    }
+    return report;
+  }
+
+  private requireSecret(peer: MobilePeer): string {
+    const secret = this.app.secretStorage.getSecret(peer.secretName);
+    if (!secret) throw new Error("The pairing secret is missing. Scan a new QR code.");
+    return secret;
+  }
+
+  private async readPolicy(peer: MobilePeer, secret: string): Promise<PeerPolicy> {
+    try {
+      return await this.post<PeerPolicy>(peer.baseUrl, "/v1/policy", peer.id, secret, {});
+    } catch (error) {
+      if (error instanceof Error && /Not found|HTTP 404/u.test(error.message)) return structuredClone(DEFAULT_PEER_POLICY);
+      throw error;
+    }
   }
 
   private async readRemoteDeletions(
@@ -166,6 +241,31 @@ export class SyncClient {
     const result = await decryptJson<SecureResponse<T>>(secret, response.json as EncryptedEnvelope);
     return validateSecureResponse(result, path, message.nonce);
   }
+}
+
+function emptySyncReport(): SyncReport {
+  return { uploaded: 0, downloaded: 0, deleted: 0, conflictsPreserved: 0, skipped: 0, failures: [] };
+}
+
+function emptyTransferReport(): TransferReport {
+  return { copied: 0, duplicates: 0, unchanged: 0, skipped: 0, failures: [] };
+}
+
+function requireTransferScopes(paths: string[]): string[] {
+  const scopes = normalizeScopes(paths);
+  if (scopes.length === 0) throw new Error("Choose at least one note or folder to transfer");
+  return scopes;
+}
+
+function countTransferResult(report: TransferReport, result: TransferWriteResult): void {
+  if (result.unchanged) report.unchanged += 1;
+  else if (result.duplicated) report.duplicates += 1;
+  else report.copied += 1;
+}
+
+function addTransferFailure(report: TransferReport, path: string, error: unknown): void {
+  report.skipped += 1;
+  report.failures.push({ action: "transfer", path, reason: error instanceof Error ? error.message : String(error) });
 }
 
 function trimSlash(value: string): string {

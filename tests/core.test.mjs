@@ -5,6 +5,7 @@ import { decryptJson, encryptJson, randomSecret, validateSecureResponse } from "
 import { inviteFromParams, inviteToUri } from "../src/shared/invite.ts";
 import { getCachedHash } from "../src/shared/manifest-cache.ts";
 import { validateDeletionRecord } from "../src/shared/deletions.ts";
+import { isPathSelected, normalizeScopes } from "../src/shared/policy.ts";
 import { conflictPath, isSyncablePath, validateSyncPath } from "../src/shared/paths.ts";
 import { shouldSyncRevision } from "../src/shared/revision.ts";
 import { planSync } from "../src/shared/sync-plan.ts";
@@ -85,6 +86,43 @@ test("sync plan sends the newer copy in either direction", () => {
   );
   assert.deepEqual(phoneNewer, [{ kind: "upload", path: "note.md", preserveExisting: true }]);
   assert.deepEqual(computerNewer, [{ kind: "download", path: "note.md", preserveExisting: true }]);
+});
+
+test("one-way sync treats the chosen source as authoritative without deleting target-only files", () => {
+  const local = [
+    { path: "shared.md", size: 1, mtime: 30, hash: "client" },
+    { path: "client-only.md", size: 1, mtime: 30, hash: "client-only" },
+  ];
+  const remote = [{ path: "shared.md", size: 1, mtime: 10, hash: "host" }];
+  assert.deepEqual(planSync(local, remote, [], [], "host-to-client", false), [
+    { kind: "download", path: "shared.md", preserveExisting: true },
+  ]);
+  assert.deepEqual(planSync(local, remote, [], [], "client-to-host", false), [
+    { kind: "upload", path: "client-only.md", preserveExisting: false },
+    { kind: "upload", path: "shared.md", preserveExisting: true },
+  ]);
+});
+
+test("one-way deletion follows only the configured source direction", () => {
+  const local = [{ path: "note.md", hash: "local", mtime: 1, size: 1 }];
+  const remote = [{ path: "note.md", hash: "remote", mtime: 1, size: 1 }];
+  const localDeletion = [{ path: "note.md", deletedAt: 3, deviceName: "client" }];
+  const remoteDeletion = [{ path: "note.md", deletedAt: 4, deviceName: "host" }];
+  assert.deepEqual(planSync(local, remote, localDeletion, remoteDeletion, "host-to-client", true), [
+    { kind: "delete-local", path: "note.md", deletion: remoteDeletion[0] },
+  ]);
+  assert.deepEqual(planSync(local, remote, localDeletion, remoteDeletion, "client-to-host", true), [
+    { kind: "delete-remote", path: "note.md", deletion: localDeletion[0] },
+  ]);
+});
+
+test("sync scopes select exact notes or whole folders and exclude Obsidian settings", () => {
+  const scopes = normalizeScopes(["项目/", "学习/数学.md", "项目/"]);
+  assert.deepEqual(scopes, ["学习/数学.md", "项目/"]);
+  assert.equal(isPathSelected("项目/计划.md", scopes), true);
+  assert.equal(isPathSelected("学习/数学.md", scopes), true);
+  assert.equal(isPathSelected("学习/英语.md", scopes), false);
+  assert.equal(isPathSelected(".obsidian/plugins/a/main.js", []), false);
 });
 
 test("sync plan propagates deletions but lets a newer file restore the path", () => {

@@ -3,7 +3,8 @@ import type { App } from "obsidian";
 import { removeDeletion, upsertDeletion, validateDeletionRecord } from "../shared/deletions";
 import { decryptJson, encryptJson, MAX_CLOCK_SKEW_MS, randomHex, randomSecret } from "../shared/encoding";
 import { isSyncablePath } from "../shared/paths";
-import { applyDeletion, buildManifest, readFilePayload, writeFilePayload } from "../shared/vault";
+import { canPeerRead, canPeerWrite, DEFAULT_PEER_POLICY, isPathSelected, normalizePolicy } from "../shared/policy";
+import { applyDeletion, buildManifest, readFilePayload, writeFilePayload, writeTransferredFile } from "../shared/vault";
 import type {
   EncryptedEnvelope,
   FilePayload,
@@ -18,7 +19,8 @@ import { nodeRequire } from "./node-modules";
 const NONCE_TTL_MS = 5 * 60 * 1000;
 const SMALL_REQUEST_LIMIT = 64 * 1024;
 const ROUTES = new Set([
-  "/v1/pair", "/v1/revision", "/v1/manifest", "/v1/deletions", "/v1/read", "/v1/write", "/v1/delete", "/v1/restore",
+  "/v1/pair", "/v1/revision", "/v1/policy", "/v1/manifest", "/v1/deletions", "/v1/read", "/v1/write",
+  "/v1/delete", "/v1/restore", "/v1/transfer-manifest", "/v1/transfer-read", "/v1/transfer-write",
 ]);
 
 export interface ServerDependencies {
@@ -42,7 +44,8 @@ export class SyncServer {
     this.server = http.createServer((request, response) => {
       void this.route(request, response).catch((error: unknown) => {
         console.error("[private-qr-sync] request failed", error);
-        this.sendJson(response, 500, { error: "Internal server error" });
+        const message = error instanceof Error ? error.message : String(error);
+        this.sendJson(response, 500, { error: `Internal server error: ${message}` });
       });
     });
     await new Promise<void>((resolve, reject) => {
@@ -104,7 +107,8 @@ export class SyncServer {
       }
     }
 
-    const body = await this.readBody(request, url.pathname === "/v1/write" ? this.maxRequestBytes() : SMALL_REQUEST_LIMIT);
+    const isFileWrite = url.pathname === "/v1/write" || url.pathname === "/v1/transfer-write";
+    const body = await this.readBody(request, isFileWrite ? this.maxRequestBytes() : SMALL_REQUEST_LIMIT);
     const envelope = JSON.parse(body) as EncryptedEnvelope;
 
     if (url.pathname === "/v1/pair") {
@@ -120,29 +124,38 @@ export class SyncServer {
 
     let result: unknown;
     const settings = this.dependencies.getSettings();
+    const policy = normalizePolicy(peer);
     const maxBytes = settings.maxFileSizeMb * 1024 * 1024;
     switch (url.pathname) {
       case "/v1/revision":
         result = { revision: this.revision };
         break;
+      case "/v1/policy":
+        result = policy;
+        break;
       case "/v1/manifest":
-        result = await buildManifest(this.dependencies.app, maxBytes);
+        result = policy.enabled ? await buildManifest(this.dependencies.app, maxBytes, policy.paths) : [];
         break;
       case "/v1/deletions":
-        result = settings.deletions;
+        result = policy.enabled && policy.syncDeletes
+          ? settings.deletions.filter((item) => item.deletedAt >= policy.deleteEnabledAt && isPathSelected(item.path, policy.paths))
+          : [];
         break;
       case "/v1/read": {
         const payload = message.payload as { path?: string };
-        if (!payload.path) throw new Error("Missing path");
+        if (!payload.path || !canPeerRead(policy) || !isPathSelected(payload.path, policy.paths)) {
+          this.sendJson(response, 403, { error: "This device cannot read that sync path" });
+          return;
+        }
         result = await readFilePayload(this.dependencies.app, payload.path, maxBytes);
         break;
       }
       case "/v1/write": {
-        if (!settings.allowMobileUploads) {
-          this.sendJson(response, 403, { error: "Mobile uploads are disabled" });
+        const payload = message.payload as FilePayload;
+        if (!settings.allowMobileUploads || !canPeerWrite(policy) || !isPathSelected(payload.path, policy.paths)) {
+          this.sendJson(response, 403, { error: "This device cannot write that sync path" });
           return;
         }
-        const payload = message.payload as FilePayload;
         const preserved = await writeFilePayload(this.dependencies.app, payload, maxBytes, peer.name);
         settings.deletions = removeDeletion(settings.deletions, payload.path);
         await this.dependencies.saveSettings();
@@ -150,11 +163,12 @@ export class SyncServer {
         break;
       }
       case "/v1/delete": {
-        if (!settings.allowMobileUploads) {
-          this.sendJson(response, 403, { error: "Client uploads are disabled" });
+        const deletion = validateDeletionRecord(message.payload);
+        if (!settings.allowMobileUploads || !canPeerWrite(policy) || !policy.syncDeletes ||
+            deletion.deletedAt < policy.deleteEnabledAt || !isPathSelected(deletion.path, policy.paths)) {
+          this.sendJson(response, 403, { error: "This device cannot delete that sync path" });
           return;
         }
-        const deletion = validateDeletionRecord(message.payload);
         const outcome = await applyDeletion(this.dependencies.app, deletion, peer.name);
         if (outcome.accepted) {
           settings.deletions = upsertDeletion(settings.deletions, deletion);
@@ -165,15 +179,41 @@ export class SyncServer {
         break;
       }
       case "/v1/restore": {
-        if (!settings.allowMobileUploads) {
-          this.sendJson(response, 403, { error: "Client uploads are disabled" });
+        const payload = message.payload as { path?: string };
+        if (!payload.path || !settings.allowMobileUploads || !canPeerWrite(policy) ||
+            !isPathSelected(payload.path, policy.paths)) {
+          this.sendJson(response, 403, { error: "This device cannot restore that sync path" });
           return;
         }
-        const payload = message.payload as { path?: string };
-        if (!payload.path || !isSyncablePath(payload.path)) throw new Error("Invalid restore path");
         settings.deletions = removeDeletion(settings.deletions, payload.path);
         await this.dependencies.saveSettings();
         result = { restored: true };
+        break;
+      }
+      case "/v1/transfer-manifest":
+        if (!policy.allowTransfers) {
+          this.sendJson(response, 403, { error: "One-time transfers are disabled for this device" });
+          return;
+        }
+        result = await buildManifest(this.dependencies.app, maxBytes);
+        break;
+      case "/v1/transfer-read": {
+        const payload = message.payload as { path?: string };
+        if (!policy.allowTransfers || !payload.path || !isSyncablePath(payload.path)) {
+          this.sendJson(response, 403, { error: "This device cannot transfer that path" });
+          return;
+        }
+        result = await readFilePayload(this.dependencies.app, payload.path, maxBytes);
+        break;
+      }
+      case "/v1/transfer-write": {
+        const payload = message.payload as FilePayload;
+        if (!policy.allowTransfers || !settings.allowMobileUploads) {
+          this.sendJson(response, 403, { error: "Transfers to the host are disabled" });
+          return;
+        }
+        result = await writeTransferredFile(this.dependencies.app, payload, maxBytes, peer.name);
+        this.markChanged();
         break;
       }
       default:
@@ -212,6 +252,7 @@ export class SyncServer {
       name: message.payload.deviceName?.trim() || "Mobile device",
       secretName,
       createdAt: Date.now(),
+      policy: structuredClone(DEFAULT_PEER_POLICY),
     };
     this.dependencies.setSecret(secretName, newPeerSecret);
     this.dependencies.setSecret(pending.secretName, randomSecret());

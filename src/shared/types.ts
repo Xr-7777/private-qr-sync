@@ -6,6 +6,18 @@ export interface PeerRecord {
   name: string;
   secretName: string;
   createdAt: number;
+  policy?: PeerPolicy;
+}
+
+export type SyncMode = "two-way" | "host-to-client" | "client-to-host";
+
+export interface PeerPolicy {
+  enabled: boolean;
+  mode: SyncMode;
+  paths: string[];
+  syncDeletes: boolean;
+  deleteEnabledAt: number;
+  allowTransfers: boolean;
 }
 
 export interface PendingPairing {
@@ -30,6 +42,7 @@ export interface PrivateQrSyncSettings {
   syncOnStartup: boolean;
   pairedPeers: PeerRecord[];
   deletions: DeletionRecord[];
+  transferPaths: string[];
   pendingPairing?: PendingPairing;
   mobilePeer?: MobilePeer;
 }
@@ -42,6 +55,7 @@ export const DEFAULT_SETTINGS: PrivateQrSyncSettings = {
   syncOnStartup: true,
   pairedPeers: [],
   deletions: [],
+  transferPaths: [],
 };
 
 export interface PairingInvite {
@@ -108,6 +122,7 @@ export interface SyncReport {
 }
 
 export interface SyncFailure {
+  action: string;
   path: string;
   reason: string;
 }
@@ -115,5 +130,20 @@ export interface SyncFailure {
 export interface SyncResult {
   report: SyncReport;
   deletions: DeletionRecord[];
+  policy: PeerPolicy;
+}
+
+export interface TransferReport {
+  copied: number;
+  duplicates: number;
+  unchanged: number;
+  skipped: number;
+  failures: SyncFailure[];
+}
+
+export interface TransferWriteResult {
+  path: string;
+  duplicated: boolean;
+  unchanged: boolean;
 }
 

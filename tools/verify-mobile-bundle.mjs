@@ -128,11 +128,19 @@ console.log("Mobile bundle loaded without Node modules.");
 const peerId = "a".repeat(24);
 const secretName = "private-qr-sync-peer-test";
 const peerSecret = "A".repeat(43);
+const peerPolicy = {
+  enabled: true,
+  mode: "two-way",
+  paths: [],
+  syncDeletes: true,
+  deleteEnabledAt: 0,
+  allowTransfers: true,
+};
 secrets.set(secretName, peerSecret);
 loadDataValue = {
   port: 0,
   deviceName: "Desktop test",
-  pairedPeers: [{ id: peerId, name: "Mobile test", secretName, createdAt: Date.now() }],
+  pairedPeers: [{ id: peerId, name: "Mobile test", secretName, createdAt: Date.now(), policy: peerPolicy }],
 };
 obsidian.Platform.isDesktopApp = true;
 obsidian.Platform.isMobile = false;
@@ -175,7 +183,39 @@ const emptySync = await plugin.client.sync(peer, "Mobile test", 20, []);
 assert.deepEqual(emptySync, {
   report: { uploaded: 0, downloaded: 0, deleted: 0, conflictsPreserved: 0, skipped: 0, failures: [] },
   deletions: [],
+  policy: peerPolicy,
 }, "new clients should exchange an encrypted deletion journal");
+await plugin.app.vault.createBinary("transfer.md", new TextEncoder().encode("client copy").buffer, { mtime: 1 });
+await desktopPlugin.app.vault.createBinary("transfer.md", new TextEncoder().encode("host copy").buffer, { mtime: 2 });
+const transfer = await plugin.client.transferFromHost(peer, "Mobile test", 20, ["transfer.md"]);
+assert.equal(transfer.duplicates, 1, "one-time transfer must preserve same-name different content as a copy");
+assert.equal(
+  plugin.app.vault.getFiles().filter((file) => file.path.startsWith("transfer (from Desktop-test ")).length,
+  1,
+  "one-time transfer should create a named copy instead of overwriting",
+);
+desktopPlugin.settings.pairedPeers[0].policy.mode = "host-to-client";
+desktopPlugin.settings.pairedPeers[0].policy.syncDeletes = false;
+desktopPlugin.settings.pairedPeers[0].policy.paths = ["one-way.md"];
+await plugin.app.vault.createBinary("one-way.md", new TextEncoder().encode("client original").buffer, { mtime: 30 });
+await desktopPlugin.app.vault.createBinary("one-way.md", new TextEncoder().encode("host authoritative").buffer, { mtime: 10 });
+const oneWaySync = await plugin.client.sync(peer, "Mobile test", 20, []);
+const oneWayClientFile = plugin.app.vault.getAbstractFileByPath("one-way.md");
+assert.equal(
+  new TextDecoder().decode(oneWayClientFile.data),
+  "host authoritative",
+  "host-to-client sync must apply the selected host copy even when the client copy is newer",
+);
+assert.equal(oneWaySync.report.downloaded, 1);
+assert.equal(oneWaySync.report.conflictsPreserved, 1, "the replaced client copy must be backed up");
+assert.equal(
+  plugin.app.vault.getFiles().filter((file) => file.path.startsWith(".private-qr-sync-conflicts/")).length,
+  1,
+  "the overwritten client original must remain in its local recovery folder",
+);
+desktopPlugin.settings.pairedPeers[0].policy.mode = "two-way";
+desktopPlugin.settings.pairedPeers[0].policy.syncDeletes = true;
+desktopPlugin.settings.pairedPeers[0].policy.paths = ["deleted.md"];
 const deletion = { path: "deleted.md", deletedAt: Date.now(), deviceName: "Mobile test" };
 await desktopPlugin.app.vault.createBinary("deleted.md", new TextEncoder().encode("recover me").buffer, { mtime: 1 });
 const deletionSync = await plugin.client.sync(peer, "Mobile test", 20, [deletion]);
@@ -188,7 +228,7 @@ assert.equal(
 assert.equal(deletionSync.report.deleted, 1);
 assert.equal(deletionSync.report.conflictsPreserved, 1);
 await desktopPlugin.onunload();
-console.log("Desktop bundle served health, revision, and deletion-journal endpoints.");
+console.log("Desktop bundle served policy, transfer, one-way sync, revision, and deletion endpoints.");
 
 capturedServer = undefined;
 loadDataValue = {

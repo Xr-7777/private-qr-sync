@@ -1,5 +1,6 @@
-import { Platform, PluginSettingTab, Setting } from "obsidian";
+import { Notice, Platform, PluginSettingTab, Setting } from "obsidian";
 import type PrivateQrSyncPlugin from "./main";
+import { normalizePolicy, normalizeScopes } from "./shared/policy";
 
 export class PrivateQrSyncSettingTab extends PluginSettingTab {
   constructor(private readonly plugin: PrivateQrSyncPlugin) {
@@ -39,8 +40,8 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
           }
         }));
     new Setting(this.containerEl)
-      .setName("Allow uploads from paired devices")
-      .setDesc("Turn this off to make paired clients read-only.")
+      .setName("Master client write switch")
+      .setDesc("Emergency master switch for all client uploads and transfers to this host.")
       .addToggle((toggle) => toggle
         .setValue(this.plugin.settings.allowMobileUploads)
         .onChange(async (value) => {
@@ -72,12 +73,62 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
       this.containerEl.createEl("p", { text: "No client devices are paired." });
     }
     for (const peer of this.plugin.settings.pairedPeers) {
+      const policy = normalizePolicy(peer);
+      peer.policy = policy;
       new Setting(this.containerEl)
         .setName(peer.name)
         .setDesc(`Paired ${new Date(peer.createdAt).toLocaleString()}`)
         .addButton((button) => button.setWarning().setButtonText("Revoke").onClick(async () => {
           await this.plugin.revokePeer(peer.id);
           this.display();
+        }));
+      new Setting(this.containerEl)
+        .setName("Enable sync")
+        .setDesc(`Pause or resume synchronization with ${peer.name} without revoking its key.`)
+        .addToggle((toggle) => toggle.setValue(policy.enabled).onChange(async (value) => {
+          policy.enabled = value;
+          await this.plugin.saveSettings();
+        }));
+      new Setting(this.containerEl)
+        .setName("Sync direction")
+        .setDesc("Host is this Windows or macOS computer; device is the paired Mac, Windows, iPhone, or iPad.")
+        .addDropdown((dropdown) => dropdown
+          .addOption("two-way", "Host ↔ device")
+          .addOption("host-to-client", "Host → device")
+          .addOption("client-to-host", "Device → host")
+          .setValue(policy.mode)
+          .onChange(async (value) => {
+            policy.mode = value as typeof policy.mode;
+            await this.plugin.saveSettings();
+          }));
+      new Setting(this.containerEl)
+        .setName("Selected sync paths")
+        .setDesc("One path per line. End folders with /. Empty means the whole vault. Example: 项目/ or 学习/数学.md")
+        .addTextArea((text) => {
+          text.setValue(policy.paths.join("\n")).onChange(async (value) => {
+            try {
+              policy.paths = normalizeScopes(value.split(/\r?\n/u));
+              await this.plugin.saveSettings();
+            } catch (error) {
+              new Notice(`Invalid sync path: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          });
+          text.inputEl.rows = 4;
+        });
+      new Setting(this.containerEl)
+        .setName("Synchronize deletions")
+        .setDesc("Off by default. When enabled, only future deletions inside the selected paths are propagated with a recovery backup.")
+        .addToggle((toggle) => toggle.setValue(policy.syncDeletes).onChange(async (value) => {
+          policy.syncDeletes = value;
+          if (value) policy.deleteEnabledAt = Date.now();
+          await this.plugin.saveSettings();
+        }));
+      new Setting(this.containerEl)
+        .setName("Allow one-time transfers")
+        .setDesc("Allows this device to copy selected notes to or from the host without creating an ongoing sync relationship.")
+        .addToggle((toggle) => toggle.setValue(policy.allowTransfers).onChange(async (value) => {
+          policy.allowTransfers = value;
+          await this.plugin.saveSettings();
         }));
     }
 
@@ -115,7 +166,7 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
         this.display();
       }));
     new Setting(this.containerEl)
-      .setName("Automatic two-way sync")
+      .setName("Automatic sync")
       .setDesc(Platform.isDesktopApp
         ? "Uploads this computer's edits and detects host edits within about two seconds while Obsidian is open."
         : "Uploads phone edits and detects host edits within about two seconds while Obsidian is open. iOS pauses plugins in the background.")
@@ -126,6 +177,27 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
           await this.plugin.saveSettings();
           if (value) await this.plugin.syncNow();
         }));
+
+    new Setting(this.containerEl).setName("One-time transfer").setHeading();
+    new Setting(this.containerEl)
+      .setName("Notes or folders to transfer")
+      .setDesc("One path per line. End folders with /. Transfers never delete or overwrite a different target file.")
+      .addTextArea((text) => {
+        text.setValue(this.plugin.settings.transferPaths.join("\n")).onChange(async (value) => {
+          this.plugin.settings.transferPaths = value.split(/\r?\n/u).map((item) => item.trim()).filter(Boolean);
+          await this.plugin.saveSettings();
+        });
+        text.inputEl.rows = 4;
+      });
+    new Setting(this.containerEl)
+      .setName("Transfer selected content")
+      .setDesc("This is a one-time copy. Same-name different content is saved as a second file.")
+      .addButton((button) => button.setCta().setButtonText("Host → this device").onClick(async () => {
+        await this.plugin.transfer("from-host");
+      }))
+      .addButton((button) => button.setButtonText("This device → host").onClick(async () => {
+        await this.plugin.transfer("to-host");
+      }));
   }
 }
 

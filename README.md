@@ -14,17 +14,27 @@ No note, attachment, account, signalling request, or telemetry is sent to a clou
 - Requests and file bodies are encrypted with AES-256-GCM, even though the LAN endpoint uses HTTP.
 - Encrypted responses are bound to the exact request nonce and endpoint to reject replayed or swapped responses.
 - Notes and attachments sync incrementally by SHA-256 hash.
+- Every paired device has its own enable switch, direction, selected paths, deletion policy, and transfer permission.
+- Sync direction can be host ↔ device, host → device, or device → host. One-way sync always treats the selected source as authoritative.
+- Empty selected paths mean the whole vault; otherwise only exact notes and folders ending in `/` participate.
+- One-time transfer is separate from sync: it never deletes, and same-name different content is saved as a second file.
 - While client Obsidian is open, local edits trigger a silent sync and host edits are detected within about two seconds.
 - The client poll transfers only an encrypted revision token; a full vault comparison runs only after a change.
 - Repeated checks reuse hashes for unchanged files instead of rereading the entire vault.
 - Before overwriting a changed file, the losing version is copied to `.private-qr-sync-conflicts/`.
-- Deletes sync in both directions. Before removing the other copy, the plugin saves it under `.private-qr-sync-conflicts/`.
+- Deletions are off by default. If enabled, they follow the selected sync direction; before removing the target copy, the plugin saves it under `.private-qr-sync-conflicts/`.
 - Conflict and deletion backups use Obsidian's cross-platform storage adapter so hidden recovery folders work on macOS and iOS.
 - `.obsidian`, `.trash`, and conflict backups are excluded.
 - Obsidian plugins and settings are intentionally not copied; install Private QR Sync separately on every device.
 - Files over 20 MB are skipped by default.
 
 The iPhone must have Obsidian open for sync. iOS suspends community plugins in the background.
+
+## Transfer versus sync
+
+- **One-time transfer**: on the client, enter exact note paths or folders ending in `/`, then choose **Host → this device** or **This device → host**. It never deletes or replaces different content; a same-name difference becomes a visible second file.
+- **Ongoing sync**: on the host, configure each paired device independently. Choose its direction and selected paths, then enable automatic sync on the client. A one-way source replaces only matching selected target paths; target-only notes remain untouched, and replaced content is recoverable from `.private-qr-sync-conflicts/`.
+- Keep **Synchronize deletions** off unless deletion propagation is intentional. Turning it on applies only to future deletions inside the selected paths.
 
 ## Pair Windows and macOS
 

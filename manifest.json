@@ -1,9 +1,9 @@
 {
   "id": "private-qr-sync",
   "name": "Private QR Sync",
-  "version": "0.1.7",
+  "version": "0.2.0",
   "minAppVersion": "1.11.4",
-  "description": "Sync an Obsidian vault directly across Windows, macOS, iPhone, and iPad on a trusted LAN.",
+  "description": "Selectively transfer or sync Obsidian notes across Windows, macOS, iPhone, and iPad on a trusted LAN.",
   "author": "Xr-7777",
   "isDesktopOnly": false
 }
