@@ -61,8 +61,8 @@ export default class PrivateQrSyncPlugin extends Plugin {
     }
   }
 
-  async onunload(): Promise<void> {
-    await this.server?.stop();
+  onunload(): void {
+    void this.server?.stop();
   }
 
   async loadSettings(): Promise<void> {

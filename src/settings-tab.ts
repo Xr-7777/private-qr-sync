@@ -9,7 +9,6 @@ export class PrivateQrSyncSettingTab extends PluginSettingTab {
 
   display(): void {
     this.containerEl.empty();
-    new Setting(this.containerEl).setName("Private QR Sync").setHeading();
 
     new Setting(this.containerEl)
       .setName(this.plugin.t("language"))
