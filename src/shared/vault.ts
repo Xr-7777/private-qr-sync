@@ -86,7 +86,7 @@ export async function applyDeletion(
 
   const backup = conflictPath(path, `${backupDeviceName}-deleted`);
   await writeConflictBackup(app, backup, await app.vault.readBinary(existing));
-  await app.vault.delete(existing);
+  await app.fileManager.trashFile(existing);
   return { accepted: true, deleted: true, preserved: true };
 }
 

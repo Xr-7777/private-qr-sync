@@ -33,6 +33,9 @@ class Plugin {
         getSecret: (name) => secrets.get(name) ?? null,
         setSecret: (name, value) => secrets.set(name, value),
       },
+      fileManager: {
+        trashFile: async (file) => { files.delete(file.path); },
+      },
       vault: {
         getName: () => "Mobile Test",
         getFiles: () => [...files.values()],
@@ -47,7 +50,6 @@ class Plugin {
           file.data = data.slice(0);
           file.stat = { size: data.byteLength, mtime: options.mtime ?? Date.now(), ctime: file.stat.ctime };
         },
-        delete: async (file) => { files.delete(file.path); },
         createFolder: async (path) => {
           const folder = new TFolder(path);
           folders.set(path, folder);
