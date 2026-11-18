@@ -1,6 +1,7 @@
 import { Notice, Platform, Plugin, TFile, type TAbstractFile } from "obsidian";
 import { confirmClientPairing } from "./client-pairing-modal";
 import { SyncClient } from "./client/sync-client";
+import { translate, type TranslationKey } from "./i18n";
 import { PairingModal } from "./pairing-modal";
 import { getLanAddresses } from "./server/network";
 import { SyncServer } from "./server/sync-server";
@@ -39,11 +40,11 @@ export default class PrivateQrSyncPlugin extends Plugin {
   async onload(): Promise<void> {
     await this.loadSettings();
     this.addSettingTab(new PrivateQrSyncSettingTab(this));
-    this.addRibbonIcon("refresh-cw", "Private QR Sync", () => void this.syncNow());
-    this.addCommand({ id: "sync-now", name: "Sync now", callback: () => void this.syncNow() });
+    this.addRibbonIcon("refresh-cw", this.t("syncNow"), () => void this.syncNow());
+    this.addCommand({ id: "sync-now", name: this.t("syncNow"), callback: () => void this.syncNow() });
     this.addCommand({
       id: "show-pairing-qr",
-      name: "Show device pairing QR code",
+      name: this.t("showPairingCommand"),
       checkCallback: (checking) => {
         if (!Platform.isDesktopApp || this.settings.mobilePeer) return false;
         if (!checking) this.showPairingModal();
@@ -67,6 +68,11 @@ export default class PrivateQrSyncPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const saved = await this.loadData() as Partial<PrivateQrSyncSettings> | null;
     this.settings = { ...structuredClone(DEFAULT_SETTINGS), ...(saved ?? {}) };
+    let settingsChanged = false;
+    if (saved?.language !== "zh" && saved?.language !== "en") {
+      this.settings.language = navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+      settingsChanged = true;
+    }
     this.settings.deletions = Array.isArray(this.settings.deletions)
       ? this.settings.deletions.flatMap((record) => {
         try { return [validateDeletionRecord(record)]; } catch { return []; }
@@ -76,11 +82,10 @@ export default class PrivateQrSyncPlugin extends Plugin {
       ? normalizeScopes(this.settings.transferPaths)
       : [];
     this.settings.pairedPeers = this.settings.pairedPeers.map((peer) => ({ ...peer, policy: normalizePolicy(peer) }));
-    let settingsChanged = false;
     if (this.settings.mobilePeer && !this.app.secretStorage.getSecret(this.settings.mobilePeer.secretName)) {
       this.settings.mobilePeer = undefined;
       settingsChanged = true;
-      new Notice("The old pairing key was missing, so the invalid pairing was cleared. Scan a new QR code.");
+      new Notice(this.t("oldKeyCleared"));
     }
     if (!this.settings.deviceName) {
       this.settings.deviceName = Platform.isDesktopApp ? "Desktop" : "iPhone";
@@ -93,6 +98,10 @@ export default class PrivateQrSyncPlugin extends Plugin {
     await this.saveData(this.settings);
   }
 
+  t(key: TranslationKey, values: Record<string, string | number> = {}): string {
+    return translate(this.settings.language, key, values);
+  }
+
   async restartServer(): Promise<void> {
     if (!Platform.isDesktopApp || this.settings.mobilePeer) return;
     await this.server?.stop();
@@ -100,7 +109,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
     const address = getLanAddresses()[0];
     if (!address) {
       this.server = undefined;
-      new Notice("Private QR Sync could not start: no private LAN address was found");
+      new Notice(this.t("noLanAddress"));
       return;
     }
     this.server = new SyncServer({
@@ -113,17 +122,17 @@ export default class PrivateQrSyncPlugin extends Plugin {
     try {
       await this.server.start(this.settings.port, address);
       this.serverAddress = address;
-      new Notice(`Private QR Sync is listening on ${address}:${this.settings.port}`);
+      new Notice(this.t("listening", { address, port: this.settings.port }));
     } catch (error) {
       this.server = undefined;
       this.serverAddress = undefined;
-      new Notice(`Private QR Sync could not start: ${error instanceof Error ? error.message : String(error)}`);
+      new Notice(this.t("startFailed", { error: error instanceof Error ? error.message : String(error) }));
     }
   }
 
   showPairingModal(): void {
     if (!Platform.isDesktopApp || this.settings.mobilePeer) {
-      new Notice("Pairing invitations are created on a host computer");
+      new Notice(this.t("inviteHostOnly"));
       return;
     }
     new PairingModal(this).open();
@@ -131,7 +140,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
 
   async createPairingInvite(): Promise<{ invite: PairingInvite; uri: string }> {
     const address = this.serverAddress;
-    if (!address) throw new Error("The private sync service is not running. Restart it after connecting to Wi-Fi or Ethernet.");
+    if (!address) throw new Error(this.t("serviceNotRunning"));
     const pairingId = randomHex(12);
     const pairingSecret = randomSecret();
     const secretName = "private-qr-sync-bootstrap";
@@ -154,13 +163,13 @@ export default class PrivateQrSyncPlugin extends Plugin {
   async syncNow(silent = false): Promise<void> {
     const peer = this.settings.mobilePeer;
     if (!peer) {
-      new Notice(Platform.isDesktopApp ? "This computer is the sync host" : "Scan a pairing QR code from the host computer first");
+      new Notice(this.t(Platform.isDesktopApp ? "thisIsHost" : "scanFirst"));
       return;
     }
     if (this.syncing) return;
     this.syncing = true;
     this.syncDeletionChanges.clear();
-    const notice = silent ? undefined : new Notice("Private QR Sync is comparing files…", 0);
+    const notice = silent ? undefined : new Notice(this.t("comparing"), 0);
     let noticeDuration = 6000;
     try {
       const revision = await this.client.getRevision(peer);
@@ -172,7 +181,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
       );
       const report = result.report;
       if (!result.policy.enabled) {
-        notice?.setMessage("Sync is paused for this device on the host computer.");
+        notice?.setMessage(this.t("syncPaused"));
         return;
       }
       let deletions = result.deletions;
@@ -182,17 +191,21 @@ export default class PrivateQrSyncPlugin extends Plugin {
       this.settings.deletions = deletions;
       await this.saveSettings();
       this.lastDesktopRevision = revision;
-      notice?.setMessage(
-        `Sync complete: ${report.downloaded} downloaded, ${report.uploaded} uploaded, ${report.deleted} deleted, ` +
-        `${report.conflictsPreserved} conflicts preserved, ${report.skipped} skipped.` +
-        (report.failures[0]
-          ? ` First failure: ${report.failures[0].action} ${report.failures[0].path} — ${report.failures[0].reason}`
-          : ""),
-      );
+      notice?.setMessage(this.t("syncComplete", {
+        downloaded: report.downloaded,
+        uploaded: report.uploaded,
+        deleted: report.deleted,
+        conflicts: report.conflictsPreserved,
+        skipped: report.skipped,
+      }) + (report.failures[0] ? this.t("firstFailure", {
+        action: report.failures[0].action,
+        path: report.failures[0].path,
+        reason: report.failures[0].reason,
+      }) : ""));
       if (report.failures.length > 0) noticeDuration = 15000;
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      if (notice) notice.setMessage(`Sync failed: ${message}`);
+      if (notice) notice.setMessage(this.t("syncFailed", { error: message }));
       else console.error(`[private-qr-sync] automatic sync failed: ${message}`);
     } finally {
       if (notice) window.setTimeout(() => notice.hide(), noticeDuration);
@@ -207,25 +220,25 @@ export default class PrivateQrSyncPlugin extends Plugin {
   async transfer(direction: "from-host" | "to-host"): Promise<void> {
     const peer = this.settings.mobilePeer;
     if (!peer) {
-      new Notice("Pair this device with a host computer first");
+      new Notice(this.t("pairHostFirst"));
       return;
     }
     let paths: string[];
     try {
       paths = normalizeScopes(this.settings.transferPaths);
-      if (paths.length === 0) throw new Error("Choose at least one note or folder");
+      if (paths.length === 0) throw new Error(this.t("chooseTransferPath"));
     } catch (error) {
-      new Notice(`Transfer cannot start: ${error instanceof Error ? error.message : String(error)}`);
+      new Notice(this.t("transferCannotStart", { error: error instanceof Error ? error.message : String(error) }));
       return;
     }
-    const notice = new Notice("Private QR Sync is transferring selected files…", 0);
+    const notice = new Notice(this.t("transferring"), 0);
     try {
       const report = direction === "from-host"
         ? await this.client.transferFromHost(peer, this.settings.deviceName, this.settings.maxFileSizeMb, paths)
         : await this.client.transferToHost(peer, this.settings.maxFileSizeMb, paths);
-      notice.setMessage(transferReportMessage(report));
+      notice.setMessage(transferReportMessage(this, report));
     } catch (error) {
-      notice.setMessage(`Transfer failed: ${error instanceof Error ? error.message : String(error)}`);
+      notice.setMessage(this.t("transferFailed", { error: error instanceof Error ? error.message : String(error) }));
     } finally {
       window.setTimeout(() => notice.hide(), 15000);
     }
@@ -256,7 +269,7 @@ export default class PrivateQrSyncPlugin extends Plugin {
       if (url.protocol !== "obsidian:" || url.hostname !== PLUGIN_ID) throw new Error("This is not a Private QR Sync pairing link");
       return await this.pairFromParams(Object.fromEntries(url.searchParams.entries()));
     } catch (error) {
-      new Notice(`Pairing failed: ${error instanceof Error ? error.message : String(error)}`);
+      new Notice(this.t("pairingFailed", { error: error instanceof Error ? error.message : String(error) }));
       return false;
     }
   }
@@ -357,10 +370,10 @@ export default class PrivateQrSyncPlugin extends Plugin {
     try {
       const invite = inviteFromParams(params);
       if (invite.vaultId !== this.app.vault.getName()) {
-        throw new Error(`This invitation is for the “${invite.vaultId}” vault. Open or create a vault with the same name first.`);
+        throw new Error(this.t("wrongVault", { vault: invite.vaultId }));
       }
-      if (!await confirmClientPairing(this.app, invite)) {
-        new Notice("Pairing cancelled");
+      if (!await confirmClientPairing(this, invite)) {
+        new Notice(this.t("pairingCancelled"));
         return false;
       }
       const peer = await this.client.pair(invite, this.settings.deviceName);
@@ -373,19 +386,26 @@ export default class PrivateQrSyncPlugin extends Plugin {
       this.lastDesktopRevision = undefined;
       await this.saveSettings();
       this.registerClientSync();
-      new Notice(`Paired with ${peer.name}. Starting the first sync…`);
+      new Notice(this.t("pairedStarting", { device: peer.name }));
       await this.syncNow();
       return true;
     } catch (error) {
-      new Notice(`Pairing failed: ${error instanceof Error ? error.message : String(error)}`);
+      new Notice(this.t("pairingFailed", { error: error instanceof Error ? error.message : String(error) }));
       return false;
     }
   }
 }
 
-function transferReportMessage(report: TransferReport): string {
-  return `Transfer complete: ${report.copied} copied, ${report.duplicates} kept as copies, ` +
-    `${report.unchanged} unchanged, ${report.skipped} skipped.` +
-    (report.failures[0] ? ` First failure: ${report.failures[0].path} — ${report.failures[0].reason}` : "");
+function transferReportMessage(plugin: PrivateQrSyncPlugin, report: TransferReport): string {
+  return plugin.t("transferComplete", {
+    copied: report.copied,
+    duplicates: report.duplicates,
+    unchanged: report.unchanged,
+    skipped: report.skipped,
+  }) + (report.failures[0] ? plugin.t("firstFailure", {
+    action: report.failures[0].action,
+    path: report.failures[0].path,
+    reason: report.failures[0].reason,
+  }) : "");
 }
 

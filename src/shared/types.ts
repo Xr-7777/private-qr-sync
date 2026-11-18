@@ -1,5 +1,6 @@
 export const PLUGIN_ID = "private-qr-sync";
 export const CONFLICT_ROOT = ".private-qr-sync-conflicts";
+export type Language = "zh" | "en";
 
 export interface PeerRecord {
   id: string;
@@ -35,6 +36,7 @@ export interface MobilePeer {
 }
 
 export interface PrivateQrSyncSettings {
+  language: Language;
   port: number;
   deviceName: string;
   allowMobileUploads: boolean;
@@ -48,6 +50,7 @@ export interface PrivateQrSyncSettings {
 }
 
 export const DEFAULT_SETTINGS: PrivateQrSyncSettings = {
+  language: "en",
   port: 27123,
   deviceName: "",
   allowMobileUploads: true,

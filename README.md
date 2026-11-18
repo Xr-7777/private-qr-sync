@@ -7,6 +7,7 @@ No note, attachment, account, signalling request, or telemetry is sent to a clou
 ## Current MVP
 
 - One Windows or macOS computer is the LAN host; macOS, Windows, iPhone, or iPad can be a client.
+- The settings page, pairing dialogs, and sync/transfer notices can switch between 中文 and English.
 - QR pairing uses `obsidian://private-qr-sync` and expires after ten minutes.
 - Mobile accepts only private IPv4 pairing addresses and requires confirmation before the first sync.
 - The bootstrap invitation is single-use. Every paired client receives a separate revocable key.

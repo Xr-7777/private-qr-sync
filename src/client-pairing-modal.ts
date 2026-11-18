@@ -1,28 +1,33 @@
-import { App, Modal, Setting } from "obsidian";
+import { Modal, Setting } from "obsidian";
+import type PrivateQrSyncPlugin from "./main";
 import type { PairingInvite } from "./shared/types";
 
-export function confirmClientPairing(app: App, invite: PairingInvite): Promise<boolean> {
-  return new Promise((resolve) => new ClientPairingModal(app, invite, resolve).open());
+export function confirmClientPairing(plugin: PrivateQrSyncPlugin, invite: PairingInvite): Promise<boolean> {
+  return new Promise((resolve) => new ClientPairingModal(plugin, invite, resolve).open());
 }
 
 class ClientPairingModal extends Modal {
   private settled = false;
 
-  constructor(app: App, private readonly invite: PairingInvite, private readonly resolve: (value: boolean) => void) {
-    super(app);
+  constructor(
+    private readonly plugin: PrivateQrSyncPlugin,
+    private readonly invite: PairingInvite,
+    private readonly resolve: (value: boolean) => void,
+  ) {
+    super(plugin.app);
   }
 
   onOpen(): void {
-    this.setTitle("Confirm private sync pairing");
-    this.contentEl.createEl("p", { text: `Host computer: ${new URL(this.invite.baseUrl).host}` });
-    this.contentEl.createEl("p", { text: `Vault: ${this.invite.vaultId}` });
+    this.setTitle(this.plugin.t("confirmPairing"));
+    this.contentEl.createEl("p", { text: this.plugin.t("hostComputer", { host: new URL(this.invite.baseUrl).host }) });
+    this.contentEl.createEl("p", { text: this.plugin.t("vault", { vault: this.invite.vaultId }) });
     this.contentEl.createEl("p", {
       cls: "private-qr-sync-warning",
-      text: "Only continue if this address is shown on your own computer. Pairing allows two-way access to this vault.",
+      text: this.plugin.t("confirmWarning"),
     });
     new Setting(this.contentEl)
-      .addButton((button) => button.setButtonText("Cancel").onClick(() => this.finish(false)))
-      .addButton((button) => button.setCta().setButtonText("Pair and sync").onClick(() => this.finish(true)));
+      .addButton((button) => button.setButtonText(this.plugin.t("cancel")).onClick(() => this.finish(false)))
+      .addButton((button) => button.setCta().setButtonText(this.plugin.t("pairAndSync")).onClick(() => this.finish(true)));
   }
 
   onClose(): void {

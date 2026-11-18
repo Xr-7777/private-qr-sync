@@ -8,8 +8,8 @@ export class PairingModal extends Modal {
   }
 
   onOpen(): void {
-    this.setTitle("Pair another device");
-    const loading = this.contentEl.createEl("p", { text: "Generating a private pairing code…" });
+    this.setTitle(this.plugin.t("pairAnother"));
+    const loading = this.contentEl.createEl("p", { text: this.plugin.t("generatingCode") });
     void this.renderPairing(loading);
   }
 
@@ -19,22 +19,24 @@ export class PairingModal extends Modal {
       loading.remove();
       const image = this.contentEl.createEl("img", {
         cls: "private-qr-sync-qr",
-        attr: { alt: "Private QR Sync pairing code" },
+        attr: { alt: this.plugin.t("qrAlt") },
       });
       image.src = await QRCode.toDataURL(uri, { width: 360, margin: 4, errorCorrectionLevel: "M" });
       this.contentEl.createEl("p", {
-        text: `On iPhone or iPad, scan this with the system Camera. On Mac or Windows, copy the pairing link and paste it into Private QR Sync settings. Expires ${new Date(invite.expiresAt).toLocaleTimeString()}.`,
+        text: this.plugin.t("qrInstructions", {
+          time: new Date(invite.expiresAt).toLocaleTimeString(this.plugin.settings.language === "zh" ? "zh-CN" : "en-US"),
+        }),
       });
-      this.contentEl.createEl("p", { text: `Computer address: ${invite.baseUrl}` });
+      this.contentEl.createEl("p", { text: this.plugin.t("computerAddress", { address: invite.baseUrl }) });
       this.contentEl.createEl("p", {
         cls: "private-qr-sync-warning",
-        text: "Treat this QR code like a password. Anyone who scans it before expiry can pair a device.",
+        text: this.plugin.t("qrWarning"),
       });
       new Setting(this.contentEl).addButton((button) => button
-        .setButtonText("Copy pairing link")
+        .setButtonText(this.plugin.t("copyPairingLink"))
         .onClick(async () => {
           await navigator.clipboard.writeText(uri);
-          new Notice("Pairing link copied");
+          new Notice(this.plugin.t("linkCopied"));
         }));
     } catch (error) {
       loading.setText(error instanceof Error ? error.message : String(error));

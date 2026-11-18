@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import QRCode from "qrcode";
 import { decryptJson, encryptJson, randomSecret, validateSecureResponse } from "../src/shared/encoding.ts";
+import { translate } from "../src/i18n.ts";
 import { inviteFromParams, inviteToUri } from "../src/shared/invite.ts";
 import { getCachedHash } from "../src/shared/manifest-cache.ts";
 import { validateDeletionRecord } from "../src/shared/deletions.ts";
@@ -15,6 +16,12 @@ test("AES-GCM round trip rejects a different secret", async () => {
   const envelope = await encryptJson(secret, { note: "private" });
   assert.deepEqual(await decryptJson(secret, envelope), { note: "private" });
   await assert.rejects(() => decryptJson(randomSecret(), envelope));
+});
+
+test("interface text switches between Chinese and English with interpolation", () => {
+  assert.equal(translate("en", "syncNow"), "Sync now");
+  assert.equal(translate("zh", "syncNow"), "立即同步");
+  assert.equal(translate("zh", "pairedStarting", { device: "Mac mini" }), "已与 Mac mini 配对，正在开始首次同步…");
 });
 
 test("pairing URI stays camera-friendly, round trips, and enforces expiry", () => {
